@@ -1,9 +1,5 @@
-#![feature(test)]
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
-
-use rocket::config::{Environment, Config, LoggingLevel};
+#[macro_use] extern crate bencher;
 
 #[get("/", format = "application/json", rank = 1)]
 fn get() -> &'static str { "json" }
@@ -24,47 +20,48 @@ fn post2() -> &'static str { "html" }
 fn post3() -> &'static str { "plain" }
 
 fn rocket() -> rocket::Rocket {
-    let config = Config::build(Environment::Production).log_level(LoggingLevel::Off);
-    rocket::custom(config.unwrap())
+    rocket::custom(rocket::Config::figment().merge(("log_level", "off")))
         .mount("/", routes![get, get2, get3])
         .mount("/", routes![post, post2, post3])
 }
 
-mod benches {
-    extern crate test;
+use bencher::Bencher;
+use rocket::local::blocking::Client;
+use rocket::http::{Accept, ContentType};
 
-    use super::rocket;
-    use self::test::Bencher;
-    use rocket::local::Client;
-    use rocket::http::{Accept, ContentType};
+fn accept_format(b: &mut Bencher) {
+    let client = Client::tracked(rocket()).unwrap();
+    let requests = vec![
+        client.get("/").header(Accept::JSON),
+        client.get("/").header(Accept::HTML),
+        client.get("/").header(Accept::Plain),
+    ];
 
-    #[bench]
-    fn accept_format(b: &mut Bencher) {
-        let client = Client::new(rocket()).unwrap();
-        let mut requests = vec![];
-        requests.push(client.get("/").header(Accept::JSON));
-        requests.push(client.get("/").header(Accept::HTML));
-        requests.push(client.get("/").header(Accept::Plain));
+    b.iter(|| {
+        for request in &requests {
+            request.clone().dispatch();
+        }
+    });
+}
 
-        b.iter(|| {
-            for request in requests.iter_mut() {
-                request.mut_dispatch();
-            }
-        });
-    }
+fn content_type_format(b: &mut Bencher) {
+    let client = Client::tracked(rocket()).unwrap();
+    let requests = vec![
+        client.post("/").header(ContentType::JSON),
+        client.post("/").header(ContentType::HTML),
+        client.post("/").header(ContentType::Plain),
+    ];
 
-    #[bench]
-    fn content_type_format(b: &mut Bencher) {
-        let client = Client::new(rocket()).unwrap();
-        let mut requests = vec![];
-        requests.push(client.post("/").header(ContentType::JSON));
-        requests.push(client.post("/").header(ContentType::HTML));
-        requests.push(client.post("/").header(ContentType::Plain));
+    b.iter(|| {
+        for request in &requests {
+            request.clone().dispatch();
+        }
+    });
+}
 
-        b.iter(|| {
-            for request in requests.iter_mut() {
-                request.mut_dispatch();
-            }
-        });
-    }
+benchmark_main!(benches);
+benchmark_group! {
+    benches,
+    accept_format,
+    content_type_format,
 }

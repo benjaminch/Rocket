@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 use rocket::http::uri::Segments;
@@ -31,14 +29,14 @@ fn dual(user: String, path: Segments<'_>) -> String {
 
 mod tests {
     use super::*;
-    use rocket::local::Client;
+    use rocket::local::blocking::Client;
 
     #[test]
     fn segments_works() {
         let rocket = rocket::ignite()
             .mount("/", routes![test, two, one_two, none, dual])
             .mount("/point", routes![test, two, one_two, dual]);
-        let client = Client::new(rocket).unwrap();
+        let client = Client::tracked(rocket).unwrap();
 
         // We construct a path that matches each of the routes above. We ensure the
         // prefix is stripped, confirming that dynamic segments are working.
@@ -47,8 +45,8 @@ mod tests {
                         "/static", "/point/static"]
         {
             let path = "this/is/the/path/we/want";
-            let mut response = client.get(format!("{}/{}", prefix, path)).dispatch();
-            assert_eq!(response.body_string(), Some(path.into()));
+            let response = client.get(format!("{}/{}", prefix, path)).dispatch();
+            assert_eq!(response.into_string(), Some(path.into()));
         }
     }
 }

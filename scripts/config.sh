@@ -23,10 +23,17 @@ function relative() {
   fi
 }
 
-# Full and major version of Rocket
-ROCKET_VERSION="0.5.0-dev"
-ROCKET_MAJOR_VERSION=$(echo "${ROCKET_VERSION}" | cut -d'.' -f1-2)
-CURRENT_RELEASE=false
+function future_date() {
+  local days_in_future=`[[ -z "$1" ]] && echo "0" || echo "$1"`
+  if date -v+1d +%Y-%m-%d > /dev/null 2>&1; then
+    echo $(date -v+${days_in_future}d +%Y-%m-%d)
+  elif date -d "+1 day" > /dev/null 2>&1; then
+    echo $(date '+%Y-%m-%d' -d "+${days_in_future} days")
+  else
+    echo "Error: need a 'date' cmd that accepts -v (BSD) or -d (GNU)"
+    exit 1
+  fi
+}
 
 # Root of workspace-like directories.
 PROJECT_ROOT=$(relative "") || exit $?
@@ -45,6 +52,26 @@ CONTRIB_CODEGEN_ROOT=$(relative "contrib/codegen") || exit $?
 EXAMPLES_DIR=$(relative "examples") || exit $?
 DOC_DIR=$(relative "target/doc") || exit $?
 
+# Versioning information. These are changed as versions change.
+VERSION=$(git grep -h "^version" "${CORE_LIB_ROOT}" | head -n 1 | cut -d '"' -f2)
+MAJOR_VERSION=$(echo "${VERSION}" | cut -d'.' -f1-2)
+VIRTUAL_CODENAME="$(git branch --show-current)"
+PHYSICAL_CODENAME="v${MAJOR_VERSION}"
+CURRENT_RELEASE=false
+PRE_RELEASE=true
+
+# A generated codename for this version. Use the git branch for pre-releases.
+case $PRE_RELEASE in
+  true)
+    CODENAME="${VIRTUAL_CODENAME}"
+    DOC_VERSION="${CODENAME}-$(future_date)"
+    ;;
+  false)
+    CODENAME="${PHYSICAL_CODENAME}"
+    DOC_VERSION="${VERSION}"
+    ;;
+esac
+
 ALL_PROJECT_DIRS=(
     "${CORE_HTTP_ROOT}"
     "${CORE_CODEGEN_ROOT}"
@@ -53,21 +80,29 @@ ALL_PROJECT_DIRS=(
     "${CONTRIB_LIB_ROOT}"
 )
 
+function print_environment() {
+  echo "  VERSION: ${VERSION}"
+  echo "  MAJOR_VERSION: ${MAJOR_VERSION}"
+  echo "  CODENAME: ${CODENAME}"
+  echo "  DOC_VERSION: ${DOC_VERSION}"
+  echo "  CURRENT_RELEASE: ${CURRENT_RELEASE}"
+  echo "  PRE_RELEASE: ${PRE_RELEASE}"
+  echo "  SCRIPT_DIR: ${SCRIPT_DIR}"
+  echo "  PROJECT_ROOT: ${PROJECT_ROOT}"
+  echo "  CORE_ROOT: ${CORE_ROOT}"
+  echo "  CONTRIB_ROOT: ${CONTRIB_ROOT}"
+  echo "  SITE_ROOT: ${SITE_ROOT}"
+  echo "  CORE_LIB_ROOT: ${CORE_LIB_ROOT}"
+  echo "  CORE_CODEGEN_ROOT: ${CORE_CODEGEN_ROOT}"
+  echo "  CORE_HTTP_ROOT: ${CORE_HTTP_ROOT}"
+  echo "  CONTRIB_LIB_ROOT: ${CONTRIB_LIB_ROOT}"
+  echo "  CONTRIB_CODEGEN_ROOT: ${CONTRIB_CODEGEN_ROOT}"
+  echo "  EXAMPLES_DIR: ${EXAMPLES_DIR}"
+  echo "  DOC_DIR: ${DOC_DIR}"
+  echo "  ALL_PROJECT_DIRS: ${ALL_PROJECT_DIRS[*]}"
+  echo "  date(): $(future_date)"
+}
+
 if [ "${1}" = "-p" ]; then
-  echo "ROCKET_VERSION: ${ROCKET_VERSION}"
-  echo "ROCKET_MAJOR_VERSION: ${ROCKET_MAJOR_VERSION}"
-  echo "CURRENT_RELEASE: ${CURRENT_RELEASE}"
-  echo "SCRIPT_DIR: ${SCRIPT_DIR}"
-  echo "PROJECT_ROOT: ${PROJECT_ROOT}"
-  echo "CORE_ROOT: ${CORE_ROOT}"
-  echo "CONTRIB_ROOT: ${CONTRIB_ROOT}"
-  echo "SITE_ROOT: ${SITE_ROOT}"
-  echo "CORE_LIB_ROOT: ${CORE_LIB_ROOT}"
-  echo "CORE_CODEGEN_ROOT: ${CORE_CODEGEN_ROOT}"
-  echo "CORE_HTTP_ROOT: ${CORE_HTTP_ROOT}"
-  echo "CONTRIB_LIB_ROOT: ${CONTRIB_LIB_ROOT}"
-  echo "CONTRIB_CODEGEN_ROOT: ${CONTRIB_CODEGEN_ROOT}"
-  echo "EXAMPLES_DIR: ${EXAMPLES_DIR}"
-  echo "DOC_DIR: ${DOC_DIR}"
-  echo "ALL_PROJECT_DIRS: ${ALL_PROJECT_DIRS[*]}"
+  print_environment
 fi

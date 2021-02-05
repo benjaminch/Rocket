@@ -1,4 +1,4 @@
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 use rocket::http::Status;
 
 fn register_hit(client: &Client) {
@@ -7,13 +7,13 @@ fn register_hit(client: &Client) {
 }
 
 fn get_count(client: &Client) -> usize {
-    let mut response = client.get("/count").dispatch();
-    response.body_string().and_then(|s| s.parse().ok()).unwrap()
+    let response = client.get("/count").dispatch();
+    response.into_string().and_then(|s| s.parse().ok()).unwrap()
 }
 
 #[test]
 fn test_count() {
-    let client = Client::new(super::rocket()).unwrap();
+    let client = Client::tracked(super::rocket()).unwrap();
 
     // Count should start at 0.
     assert_eq!(get_count(&client), 0);
@@ -31,7 +31,6 @@ fn test_raw_state_count() {
     use super::{count, index};
 
     let rocket = super::rocket();
-
     assert_eq!(count(State::from(&rocket).unwrap()), "0");
     assert!(index(State::from(&rocket).unwrap()).0.contains("Visits: 1"));
     assert_eq!(count(State::from(&rocket).unwrap()), "1");

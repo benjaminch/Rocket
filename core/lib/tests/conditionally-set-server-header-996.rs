@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 use rocket::Response;
@@ -17,12 +15,12 @@ fn use_default() { }
 
 mod conditionally_set_server_header {
     use super::*;
-    use rocket::local::Client;
+    use rocket::local::blocking::Client;
 
     #[test]
     fn do_not_overwrite_server_header() {
         let rocket = rocket::ignite().mount("/", routes![do_not_overwrite, use_default]);
-        let client = Client::new(rocket).unwrap();
+        let client = Client::tracked(rocket).unwrap();
 
         let response = client.get("/do_not_overwrite").dispatch();
         let server = response.headers().get_one("Server");

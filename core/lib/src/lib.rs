@@ -1,10 +1,9 @@
-#![feature(proc_macro_hygiene)]
-
 #![recursion_limit="256"]
 
-#![doc(html_root_url = "https://api.rocket.rs/v0.5")]
-#![doc(html_favicon_url = "https://rocket.rs/v0.5/images/favicon.ico")]
-#![doc(html_logo_url = "https://rocket.rs/v0.5/images/logo-boxed.png")]
+#![doc(html_root_url = "https://api.rocket.rs/master")]
+#![doc(html_favicon_url = "https://rocket.rs/images/favicon.ico")]
+#![doc(html_logo_url = "https://rocket.rs/images/logo-boxed.png")]
+#![cfg_attr(nightly, feature(doc_cfg))]
 
 #![warn(rust_2018_idioms)]
 
@@ -22,10 +21,10 @@
 //! automatic JSON (de)serialiazation, templating support, static file serving,
 //! and other useful features.
 //!
-//! [overview]: https://rocket.rs/v0.5/overview
-//! [full, detailed guide]: https://rocket.rs/v0.5/guide
-//! [quickstart]: https://rocket.rs/v0.5/guide/quickstart
-//! [getting started]: https://rocket.rs/v0.5/guide/getting-started
+//! [overview]: https://rocket.rs/master/overview
+//! [full, detailed guide]: https://rocket.rs/master/guide
+//! [quickstart]: https://rocket.rs/master/guide/quickstart
+//! [getting started]: https://rocket.rs/master/guide/getting-started
 //!
 //! ## Libraries
 //!
@@ -37,29 +36,17 @@
 //!
 //! ## Usage
 //!
-//! First, depend on `rocket` in `Cargo.toml`:
+//! Depend on `rocket` in `Rocket.toml`:
 //!
 //! ```toml
 //! [dependencies]
 //! rocket = "0.5.0-dev"
 //! ```
 //!
-//! Then, add the following to the top of your `main.rs` file:
-//!
-//! ```rust
-//! #![feature(proc_macro_hygiene)]
-//!
-//! #[macro_use] extern crate rocket;
-//! # #[get("/")] fn hello() { }
-//! # fn main() { rocket::ignite().mount("/", routes![hello]); }
-//! ```
-//!
-//! See the [guide](https://rocket.rs/v0.5/guide) for more information on how to
+//! See the [guide](https://rocket.rs/master/guide) for more information on how to
 //! write Rocket applications. Here's a simple example to get you started:
 //!
-//! ```rust
-//! #![feature(proc_macro_hygiene)]
-//!
+//! ```rust,no_run
 //! #[macro_use] extern crate rocket;
 //!
 //! #[get("/")]
@@ -67,12 +54,28 @@
 //!     "Hello, world!"
 //! }
 //!
-//! fn main() {
-//! # if false { // We don't actually want to launch the server in an example.
-//!     rocket::ignite().mount("/", routes![hello]).launch();
-//! # }
+//! #[launch]
+//! fn rocket() -> _ {
+//!     rocket::ignite().mount("/", routes![hello])
 //! }
 //! ```
+//!
+//! ## Features
+//!
+//! There are two optional, disabled-by-default features:
+//!
+//!   * **secrets:** Enables support for [private cookies].
+//!   * **tls:** Enables support for [TLS].
+//!
+//! The features can be enabled in `Rocket.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! rocket = { version = "0.5.0-dev", features = ["secrets", "tls"] }
+//! ```
+//!
+//! [private cookies]: https://rocket.rs/master/guide/requests/#private-cookies
+//! [TLS]: https://rocket.rs/master/guide/configuration/#tls
 //!
 //! ## Configuration
 //!
@@ -81,7 +84,7 @@
 //! configure Rocket, see the [configuration section] of the guide as well as
 //! the [`config`] module documentation.
 //!
-//! [configuration section]: https://rocket.rs/v0.5/guide/configuration/
+//! [configuration section]: https://rocket.rs/master/guide/configuration/
 //!
 //! ## Testing
 //!
@@ -90,16 +93,21 @@
 //! documentation and the [testing chapter of the guide] include detailed
 //! examples.
 //!
-//! [testing chapter of the guide]: https://rocket.rs/v0.5/guide/testing/#testing
+//! [testing chapter of the guide]: https://rocket.rs/master/guide/testing/#testing
 
 #[allow(unused_imports)] #[macro_use] extern crate rocket_codegen;
-// FIXME(rustdoc): We should be able to doc(inline) and not doc the
-// rocket_codegen crate at all. Alas, doc-inlining will currently 1) show hidden
-// proc-macros, and 2) result in proc-macros pointing to the wrong docs.
-#[doc(hidden)] pub use rocket_codegen::*;
+pub use rocket_codegen::*;
+pub use async_trait::*;
 
 #[macro_use] extern crate log;
-#[macro_use] extern crate pear;
+
+/// These are public dependencies! Update docs if these are changed, especially
+/// figment's version number in docs.
+#[doc(hidden)]
+pub use yansi;
+pub use futures;
+pub use tokio;
+pub use figment;
 
 #[doc(hidden)] #[macro_use] pub mod logger;
 #[macro_use] pub mod outcome;
@@ -111,6 +119,7 @@ pub mod data;
 pub mod handler;
 pub mod fairing;
 pub mod error;
+pub mod catcher;
 
 // Reexport of HTTP everything.
 pub mod http {
@@ -123,22 +132,23 @@ pub mod http {
     pub use rocket_http::*;
 }
 
+mod shutdown;
 mod router;
 mod rocket;
+mod server;
 mod codegen;
-mod catcher;
 mod ext;
 
+#[doc(hidden)] pub use log::{info, warn, error, debug};
 #[doc(inline)] pub use crate::response::Response;
-#[doc(inline)] pub use crate::handler::{Handler, ErrorHandler};
-#[doc(hidden)] pub use crate::codegen::{StaticRouteInfo, StaticCatchInfo};
-#[doc(inline)] pub use crate::outcome::Outcome;
+#[doc(hidden)] pub use crate::codegen::{StaticRouteInfo, StaticCatcherInfo};
 #[doc(inline)] pub use crate::data::Data;
 #[doc(inline)] pub use crate::config::Config;
+#[doc(inline)] pub use crate::catcher::Catcher;
 pub use crate::router::Route;
 pub use crate::request::{Request, State};
-pub use crate::catcher::Catcher;
 pub use crate::rocket::Rocket;
+pub use crate::shutdown::Shutdown;
 
 /// Alias to [`Rocket::ignite()`] Creates a new instance of `Rocket`.
 pub fn ignite() -> Rocket {
@@ -146,7 +156,34 @@ pub fn ignite() -> Rocket {
 }
 
 /// Alias to [`Rocket::custom()`]. Creates a new instance of `Rocket` with a
-/// custom configuration.
-pub fn custom(config: config::Config) -> Rocket {
-    Rocket::custom(config)
+/// custom configuration provider.
+pub fn custom<T: figment::Provider>(provider: T) -> Rocket {
+    Rocket::custom(provider)
+}
+
+/// WARNING: This is unstable! Do not use this method outside of Rocket!
+#[doc(hidden)]
+pub fn async_test<R>(fut: impl std::future::Future<Output = R> + Send) -> R {
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_name("rocket-test-worker-thread")
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("create tokio runtime")
+        .block_on(fut)
+}
+
+/// WARNING: This is unstable! Do not use this method outside of Rocket!
+#[doc(hidden)]
+pub fn async_main<R>(fut: impl std::future::Future<Output = R> + Send) -> R {
+    // FIXME: The `workers` value won't reflect swaps of `Rocket` in attach
+    // fairings with different config values, or values from non-Rocket configs.
+    // See tokio-rs/tokio#3329 for a necessary solution in `tokio`.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(Config::from(Config::figment()).workers)
+        .thread_name("rocket-worker-thread")
+        .enable_all()
+        .build()
+        .expect("create tokio runtime")
+        .block_on(fut)
 }

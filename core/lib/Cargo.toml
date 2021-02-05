@@ -3,14 +3,14 @@ name = "rocket"
 version = "0.5.0-dev"
 authors = ["Sergio Benitez <sb@sergio.bz>"]
 description = """
-Web framework for nightly with a focus on ease-of-use, expressibility, and speed.
+Web framework with a focus on usability, security, extensibility, and speed.
 """
-documentation = "https://api.rocket.rs/v0.5/rocket/"
+documentation = "https://api.rocket.rs/master/rocket/"
 homepage = "https://rocket.rs"
 repository = "https://github.com/SergioBenitez/Rocket"
 readme = "../../README.md"
 keywords = ["rocket", "web", "framework", "server"]
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 build = "build.rs"
 categories = ["web-programming::http-server"]
 edition = "2018"
@@ -19,29 +19,52 @@ edition = "2018"
 all-features = true
 
 [features]
-default = ["private-cookies"]
+default = []
 tls = ["rocket_http/tls"]
-private-cookies = ["rocket_http/private-cookies"]
+secrets = ["rocket_http/private-cookies"]
 
 [dependencies]
 rocket_codegen = { version = "0.5.0-dev", path = "../codegen" }
 rocket_http = { version = "0.5.0-dev", path = "../http" }
+futures = "0.3.0"
 yansi = "0.5"
-log = "0.4"
-toml = "0.4.7"
+log = { version = "0.4", features = ["std"] }
 num_cpus = "1.0"
 state = "0.4.1"
-time = "0.1"
+time = "0.2.11"
 memchr = "2" # TODO: Use pear instead.
-base64 = "0.11"
-base16 = "0.2"
-pear = "0.1"
+binascii = "0.1"
 atty = "0.2"
+async-trait = "0.1"
+ref-cast = "1.0"
+atomic = "0.5"
+parking_lot = "0.11"
+ubyte = {version = "0.10", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+figment = { version = "0.10.2", features = ["toml", "env"] }
+rand = "0.7"
+either = "1"
+
+[dependencies.tokio]
+version = "1.0"
+features = ["fs", "io-std", "io-util", "rt-multi-thread", "sync", "signal", "macros"]
 
 [build-dependencies]
 yansi = "0.5"
 version_check = "0.9.1"
 
 [dev-dependencies]
-# TODO: Find a way to not depend on this.
-lazy_static = "1.0"
+bencher = "0.1"
+figment = { version = "0.10", features = ["test"] }
+
+[[bench]]
+name = "format-routing"
+harness = false
+
+[[bench]]
+name = "ranked-routing"
+harness = false
+
+[[bench]]
+name = "simple-routing"
+harness = false

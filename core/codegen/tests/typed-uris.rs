@@ -1,11 +1,10 @@
-#![feature(proc_macro_hygiene)]
 #![allow(dead_code, unused_variables)]
 
 #[macro_use] extern crate rocket;
 
 use std::path::PathBuf;
 
-use rocket::http::{RawStr, Cookies};
+use rocket::http::{RawStr, CookieJar};
 use rocket::http::uri::{FromUriParam, Query};
 use rocket::request::Form;
 
@@ -52,13 +51,13 @@ fn simple4_flipped(name: String, id: i32) { }
 fn unused_param(used: i32, _unused: i32) { }
 
 #[post("/<id>")]
-fn guard_1(cookies: Cookies<'_>, id: i32) { }
+fn guard_1(cookies: &CookieJar<'_>, id: i32) { }
 
 #[post("/<id>/<name>")]
-fn guard_2(name: String, cookies: Cookies<'_>, id: i32) { }
+fn guard_2(name: String, cookies: &CookieJar<'_>, id: i32) { }
 
 #[post("/a/<id>/hi/<name>/hey")]
-fn guard_3(id: i32, name: String, cookies: Cookies<'_>) { }
+fn guard_3(id: i32, name: String, cookies: &CookieJar<'_>) { }
 
 #[post("/<id>", data = "<form>")]
 fn no_uri_display_okay(id: i32, form: Form<Second>) { }
@@ -70,7 +69,7 @@ fn complex<'r>(
     query: Form<User<'r>>,
     user: Form<User<'r>>,
     bar: &RawStr,
-    cookies: Cookies<'_>
+    cookies: &CookieJar<'_>
 ) {  }
 
 #[post("/a/<path..>")]
@@ -80,7 +79,7 @@ fn segments(path: PathBuf) { }
 fn param_and_segments(path: PathBuf, id: usize) { }
 
 #[post("/a/<id>/then/<path..>")]
-fn guarded_segments(cookies: Cookies<'_>, path: PathBuf, id: usize) { }
+fn guarded_segments(cookies: &CookieJar<'_>, path: PathBuf, id: usize) { }
 
 macro_rules! assert_uri_eq {
     ($($uri:expr => $expected:expr,)+) => {
@@ -279,7 +278,7 @@ fn check_complex() {
 #[test]
 fn check_location_promotion() {
     struct S1(String);
-    struct S2 { name: String };
+    struct S2 { name: String }
 
     let s1 = S1("Bob".into());
     let s2 = S2 { name: "Bob".into() };
@@ -368,41 +367,64 @@ fn optionals(
 
 #[test]
 fn test_optional_uri_parameters() {
+    let mut some_10 = Some(10);
+    let mut third = Third { one: "hi there".into(), two: "a b".into() };
     assert_uri_eq! {
         uri!(optionals:
             foo = 10,
             bar = &"hi there",
-            q1 = 10,
-            rest = Third { one: "hi there".into(), two: "a b".into() }
+            q1 = Some(10),
+            rest = Some(Third { one: "hi there".into(), two: "a b".into() })
         ) => "/10/hi%20there?q1=10&one=hi%20there&two=a%20b",
 
         uri!(optionals:
             foo = &10,
             bar = &"hi there",
-            q1 = &10,
-            rest = &Third { one: "hi there".into(), two: "a b".into() }
+            q1 = Some(&10),
+            rest = Some(&third)
         ) => "/10/hi%20there?q1=10&one=hi%20there&two=a%20b",
 
         uri!(optionals:
             foo = &mut 10,
             bar = &mut "hi there",
-            q1 = &mut 10,
-            rest = &mut Third { one: "hi there".into(), two: "a b".into() }
+            q1 = some_10.as_mut(),
+            rest = Some(&mut third)
         ) => "/10/hi%20there?q1=10&one=hi%20there&two=a%20b",
 
         uri!(optionals:
             foo = 10,
             bar = &"hi there",
             q1 = _,
-            rest = Third { one: "hi there".into(), two: "a b".into() }
+            rest = Some(Third { one: "hi there".into(), two: "a b".into() })
         ) => "/10/hi%20there?one=hi%20there&two=a%20b",
 
         uri!(optionals:
             foo = 10,
             bar = &"hi there",
-            q1 = 10,
+            q1 = Some(10),
             rest = _
         ) => "/10/hi%20there?q1=10",
+
+        uri!(optionals:
+            foo = 10,
+            bar = &"hi there",
+            q1 = Err("foo".into()) as Result<usize, &RawStr>,
+            rest = _
+        ) => "/10/hi%20there",
+
+        uri!(optionals:
+            foo = 10,
+            bar = &"hi there",
+            q1 = None as Option<usize>,
+            rest = _
+        ) => "/10/hi%20there",
+
+        uri!(optionals:
+            foo = 10,
+            bar = &"hi there",
+            q1 = _,
+            rest = None as Option<Third<'_>>,
+        ) => "/10/hi%20there",
 
         uri!(optionals:
             foo = 10,

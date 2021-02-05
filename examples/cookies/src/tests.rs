@@ -1,41 +1,42 @@
 use std::collections::HashMap;
 
 use super::rocket;
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 use rocket::http::*;
 use rocket_contrib::templates::Template;
 
 #[test]
 fn test_submit() {
-    let client = Client::new(rocket()).unwrap();
+    let client = Client::tracked(rocket()).unwrap();
     let response = client.post("/submit")
         .header(ContentType::Form)
         .body("message=Hello from Rocket!")
         .dispatch();
 
     let cookie_headers: Vec<_> = response.headers().get("Set-Cookie").collect();
-    let location_headers: Vec<_> = response.headers().get("Location").collect();
+    assert_eq!(cookie_headers.len(), 1);
+    assert!(cookie_headers[0].starts_with("message=Hello%20from%20Rocket!"));
 
-    assert_eq!(response.status(), Status::SeeOther);
-    assert_eq!(cookie_headers, vec!["message=Hello%20from%20Rocket!".to_string()]);
+    let location_headers: Vec<_> = response.headers().get("Location").collect();
     assert_eq!(location_headers, vec!["/".to_string()]);
+    assert_eq!(response.status(), Status::SeeOther);
 }
 
 fn test_body(optional_cookie: Option<Cookie<'static>>, expected_body: String) {
     // Attach a cookie if one is given.
-    let client = Client::new(rocket()).unwrap();
-    let mut response = match optional_cookie {
+    let client = Client::tracked(rocket()).unwrap();
+    let response = match optional_cookie {
         Some(cookie) => client.get("/").cookie(cookie).dispatch(),
         None => client.get("/").dispatch(),
     };
 
     assert_eq!(response.status(), Status::Ok);
-    assert_eq!(response.body_string(), Some(expected_body));
+    assert_eq!(response.into_string(), Some(expected_body));
 }
 
 #[test]
 fn test_index() {
-    let client = Client::new(rocket()).unwrap();
+    let client = Client::tracked(rocket()).unwrap();
 
     // Render the template with an empty context.
     let mut context: HashMap<&str, &str> = HashMap::new();

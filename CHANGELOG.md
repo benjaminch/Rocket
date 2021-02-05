@@ -1,3 +1,83 @@
+# Version 0.4.5 (May 30, 2020)
+
+## Core
+
+  * [[#1312], [`89150f`]] Fixed a low-severity, minimal impact soundness issue in
+    `LocalRequest::clone()`.
+  * [[#1263], [`376f74`]] Fixed a cookie serialization issue that led to
+    incorrect cookie deserialization in certain cases.
+  * Removed dependency on `ring` for private cookies and thus Rocket, by
+    default.
+  * Added [`Origin::map_path()`] for manipulating `Origin` paths.
+  * Added [`handler::Outcome::from_or_forward()`].
+  * Added [`Options::NormalizeDirs`] option to `StaticFiles`.
+  * Improved accessibility of default error HTML.
+
+## Docs
+
+  * Fixed various typos.
+
+[#1312]: https://github.com/SergioBenitez/Rocket/issues/1312
+[`89150f`]: https://github.com/SergioBenitez/Rocket/commit/89150f
+[#1263]: https://github.com/SergioBenitez/Rocket/issues/1263
+[`376f74`]: https://github.com/SergioBenitez/Rocket/commit/376f74
+[`Origin::map_path()`]: https://api.rocket.rs/v0.4/rocket/http/uri/struct.Origin.html#method.map_path
+[`handler::Outcome::from_or_forward()`]: https://api.rocket.rs/v0.4/rocket/handler/type.Outcome.html#method.from_or_forward
+[`Options::NormalizeDirs`]: https://api.rocket.rs/v0.4/rocket_contrib/serve/struct.Options.html#associatedconstant.NormalizeDirs
+
+# Version 0.4.4 (Mar 09, 2020)
+
+## Core
+
+  * Removed use of unsupported `cfg(debug_assertions)` in `Cargo.toml`, allowing
+    for builds on latest nightlies.
+
+## Docs
+
+  * Fixed various broken links.
+
+# Version 0.4.3 (Feb 29, 2020)
+
+## Core
+
+  * Added a new [`Debug`] `500` `Responder` that `Debug`-prints its contents on
+    response.
+  * Specialization on `Result` was deprecated. [`Debug`] can be used in place of
+    non-`Responder` errors.
+  * Fixed an issue that resulted in cookies not being set on error responses.
+  * Various `Debug` implementations on Rocket types now respect formatting
+    options.
+  * Added `Responder`s for various HTTP status codes: [`NoContent`],
+    [`Unauthorized`], [`Forbidden`], and [`Conflict`].
+  * `FromParam` is implemented for `NonZero` core types.
+
+## Codegen
+
+  * Docs for Rocket-generated macros are now hidden.
+  * Generated code now works even when prelude imports like `Some`, `Ok`, and
+    `Err` are shadowed.
+  * Error messages referring to responder types in routes now point to the type
+    correctly.
+
+## Docs
+
+  * All code examples in the guide are now tested and guaranteed to compile.
+  * All macros are documented in the `core` crate; `rocket_codegen` makes no
+    appearances.
+
+## Infrastructure
+
+  * CI was moved from Travis to Azure Pipelines; Windows support is tested.
+  * Rocket's chat moved to [Matrix] and [Freenode].
+
+[`Debug`]: https://api.rocket.rs/v0.4/rocket/response/struct.Debug.html
+[`NoContent`]: https://api.rocket.rs/v0.4/rocket/response/status/struct.NoContent.html
+[`Unauthorized`]: https://api.rocket.rs/v0.4/rocket/response/status/struct.Unauthorized.html
+[`Forbidden`]: https://api.rocket.rs/v0.4/rocket/response/status/struct.Forbidden.html
+[`Conflict`]: https://api.rocket.rs/v0.4/rocket/response/status/struct.Conflict.html
+[Matrix]: https://chat.mozilla.org/#/room/#rocket:mozilla.org
+[Freenode]: https://kiwiirc.com/client/chat.freenode.net/#rocket
+
 # Version 0.4.2 (Jun 28, 2019)
 
 ## Core
@@ -878,7 +958,7 @@ applications.
   * **The [`Responder`] trait has changed.**
 
     `Responder::respond(self)` was removed in favor of
-    `Responder::respond_to(self, &Request)`. Responders may dynamically adjust
+    `Responder::respond_to(self, &'r Request)`. Responders may dynamically adjust
     their response based on the incoming request.
 
   * **`Outcome::of(Responder)` was removed while `Outcome::from(&Request,

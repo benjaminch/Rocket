@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 use rocket::response::Redirect;
@@ -10,18 +8,18 @@ fn google() -> Redirect {
 }
 
 #[get("/rocket")]
-fn rocket() -> Redirect {
+fn redirect() -> Redirect {
     Redirect::to("https://rocket.rs:80")
 }
 
 mod test_absolute_uris_okay {
     use super::*;
-    use rocket::local::Client;
+    use rocket::local::blocking::Client;
 
     #[test]
     fn redirect_works() {
-        let rocket = rocket::ignite().mount("/", routes![google, rocket]);
-        let client = Client::new(rocket).unwrap();
+        let rocket = rocket::ignite().mount("/", routes![google, redirect]);
+        let client = Client::tracked(rocket).unwrap();
 
         let response = client.get("/google").dispatch();
         let location = response.headers().get_one("Location");

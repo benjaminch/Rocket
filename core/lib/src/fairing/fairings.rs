@@ -1,5 +1,6 @@
 use crate::{Rocket, Request, Response, Data};
 use crate::fairing::{Fairing, Kind};
+use crate::logger::PaintExt;
 
 use yansi::Paint;
 
@@ -19,12 +20,12 @@ impl Fairings {
         Fairings::default()
     }
 
-    pub fn attach(&mut self, fairing: Box<dyn Fairing>, mut rocket: Rocket) -> Rocket {
+    pub async fn attach(&mut self, fairing: Box<dyn Fairing>, mut rocket: Rocket) -> Rocket {
         // Run the `on_attach` callback if this is an 'attach' fairing.
         let kind = fairing.info().kind;
         let name = fairing.info().name;
         if kind.is(Kind::Attach) {
-            rocket = fairing.on_attach(rocket)
+            rocket = fairing.on_attach(rocket).await
                 .unwrap_or_else(|r| { self.attach_failures.push(name); r })
         }
 
@@ -58,16 +59,16 @@ impl Fairings {
     }
 
     #[inline(always)]
-    pub fn handle_request(&self, req: &mut Request<'_>, data: &Data) {
+    pub async fn handle_request(&self, req: &mut Request<'_>, data: &mut Data) {
         for &i in &self.request {
-            self.all_fairings[i].on_request(req, data);
+            self.all_fairings[i].on_request(req, data).await;
         }
     }
 
     #[inline(always)]
-    pub fn handle_response(&self, request: &Request<'_>, response: &mut Response<'_>) {
+    pub async fn handle_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
         for &i in &self.response {
-            self.all_fairings[i].on_response(request, response);
+            self.all_fairings[i].on_response(request, response).await;
         }
     }
 
@@ -93,7 +94,7 @@ impl Fairings {
 
     pub fn pretty_print_counts(&self) {
         if !self.all_fairings.is_empty() {
-            info!("{}{}:", Paint::masked("📡 "), Paint::magenta("Fairings"));
+            info!("{}{}:", Paint::emoji("📡 "), Paint::magenta("Fairings"));
             self.info_for("launch", &self.launch);
             self.info_for("request", &self.request);
             self.info_for("response", &self.response);

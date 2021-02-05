@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 #[cfg(test)]
@@ -9,7 +7,7 @@ use std::collections::HashMap;
 
 use rocket::request::Form;
 use rocket::response::Redirect;
-use rocket::http::{Cookie, Cookies};
+use rocket::http::{Cookie, CookieJar};
 use rocket_contrib::templates::Template;
 
 #[derive(FromForm)]
@@ -18,13 +16,13 @@ struct Message {
 }
 
 #[post("/submit", data = "<message>")]
-fn submit(mut cookies: Cookies<'_>, message: Form<Message>) -> Redirect {
+fn submit(cookies: &CookieJar<'_>, message: Form<Message>) -> Redirect {
     cookies.add(Cookie::new("message", message.into_inner().message));
     Redirect::to("/")
 }
 
 #[get("/")]
-fn index(cookies: Cookies<'_>) -> Template {
+fn index(cookies: &CookieJar<'_>) -> Template {
     let cookie = cookies.get("message");
     let mut context = HashMap::new();
     if let Some(ref cookie) = cookie {
@@ -34,10 +32,7 @@ fn index(cookies: Cookies<'_>) -> Template {
     Template::render("index", &context)
 }
 
+#[launch]
 fn rocket() -> rocket::Rocket {
     rocket::ignite().mount("/", routes![submit, index]).attach(Template::fairing())
-}
-
-fn main() {
-    rocket().launch();
 }

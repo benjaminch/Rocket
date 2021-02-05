@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 use rocket::request::Form;
@@ -16,43 +14,41 @@ fn index(form: Form<Simple>) -> String {
 
 mod limits_tests {
     use rocket;
-    use rocket::config::{Environment, Config, Limits};
-    use rocket::local::Client;
+    use rocket::local::blocking::Client;
     use rocket::http::{Status, ContentType};
+    use rocket::data::Limits;
 
     fn rocket_with_forms_limit(limit: u64) -> rocket::Rocket {
-        let config = Config::build(Environment::Development)
-            .limits(Limits::default().limit("forms", limit))
-            .unwrap();
-
+        let limits = Limits::default().limit("forms", limit.into());
+        let config = rocket::Config::figment().merge(("limits", limits));
         rocket::custom(config).mount("/", routes![super::index])
     }
 
     #[test]
     fn large_enough() {
-        let client = Client::new(rocket_with_forms_limit(128)).unwrap();
-        let mut response = client.post("/")
+        let client = Client::tracked(rocket_with_forms_limit(128)).unwrap();
+        let response = client.post("/")
             .body("value=Hello+world")
             .header(ContentType::Form)
             .dispatch();
 
-        assert_eq!(response.body_string(), Some("Hello world".into()));
+        assert_eq!(response.into_string(), Some("Hello world".into()));
     }
 
     #[test]
     fn just_large_enough() {
-        let client = Client::new(rocket_with_forms_limit(17)).unwrap();
-        let mut response = client.post("/")
+        let client = Client::tracked(rocket_with_forms_limit(17)).unwrap();
+        let response = client.post("/")
             .body("value=Hello+world")
             .header(ContentType::Form)
             .dispatch();
 
-        assert_eq!(response.body_string(), Some("Hello world".into()));
+        assert_eq!(response.into_string(), Some("Hello world".into()));
     }
 
     #[test]
     fn much_too_small() {
-        let client = Client::new(rocket_with_forms_limit(4)).unwrap();
+        let client = Client::tracked(rocket_with_forms_limit(4)).unwrap();
         let response = client.post("/")
             .body("value=Hello+world")
             .header(ContentType::Form)
@@ -63,12 +59,12 @@ mod limits_tests {
 
     #[test]
     fn contracted() {
-        let client = Client::new(rocket_with_forms_limit(10)).unwrap();
-        let mut response = client.post("/")
+        let client = Client::tracked(rocket_with_forms_limit(10)).unwrap();
+        let response = client.post("/")
             .body("value=Hello+world")
             .header(ContentType::Form)
             .dispatch();
 
-        assert_eq!(response.body_string(), Some("Hell".into()));
+        assert_eq!(response.into_string(), Some("Hell".into()));
     }
 }

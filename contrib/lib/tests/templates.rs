@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[cfg(feature = "templates")]
 #[macro_use] extern crate rocket;
 
@@ -8,7 +6,7 @@ mod templates_tests {
     use std::path::{Path, PathBuf};
 
     use rocket::{Rocket, http::RawStr};
-    use rocket::config::{Config, Environment};
+    use rocket::config::Config;
     use rocket_contrib::templates::{Template, Metadata};
 
     #[get("/<engine>/<name>")]
@@ -29,12 +27,26 @@ mod templates_tests {
     }
 
     fn rocket() -> Rocket {
-        let config = Config::build(Environment::Development)
-            .extra("template_dir", template_root().to_str().expect("template directory"))
-            .expect("valid configuration");
-
-        rocket::custom(config).attach(Template::fairing())
+        rocket::custom(Config::figment().merge(("template_dir", template_root())))
+            .attach(Template::fairing())
             .mount("/", routes![template_check, is_reloading])
+    }
+
+    #[test]
+    fn test_callback_error() {
+        use rocket::{local::blocking::Client, error::ErrorKind::FailedFairings};
+
+        let rocket = rocket::ignite().attach(Template::try_custom(|_| {
+            Err("error reloading templates!".into())
+        }));
+
+        match Client::untracked(rocket) {
+            Err(e) => match e.kind() {
+                FailedFairings(failures) => assert_eq!(failures[0], "Templates"),
+                _ => panic!("Wrong kind of launch error"),
+            }
+            _ => panic!("Wrong kind of error"),
+        }
     }
 
     #[cfg(feature = "tera_templates")]
@@ -42,7 +54,7 @@ mod templates_tests {
         use super::*;
         use std::collections::HashMap;
         use rocket::http::Status;
-        use rocket::local::Client;
+        use rocket::local::blocking::Client;
 
         const UNESCAPED_EXPECTED: &'static str
             = "\nh_start\ntitle: _test_\nh_end\n\n\n<script />\n\nfoot\n";
@@ -67,7 +79,7 @@ mod templates_tests {
 
         #[test]
         fn test_template_metadata_with_tera() {
-            let client = Client::new(rocket()).unwrap();
+            let client = Client::tracked(rocket()).unwrap();
 
             let response = client.get("/tera/txt_test").dispatch();
             assert_eq!(response.status(), Status::Ok);
@@ -88,7 +100,7 @@ mod templates_tests {
         use super::*;
         use std::collections::HashMap;
         use rocket::http::Status;
-        use rocket::local::Client;
+        use rocket::local::blocking::Client;
 
         const EXPECTED: &'static str
             = "Hello _test_!\n\n<main> &lt;script /&gt; hi </main>\nDone.\n\n";
@@ -107,7 +119,7 @@ mod templates_tests {
 
         #[test]
         fn test_template_metadata_with_handlebars() {
-            let client = Client::new(rocket()).unwrap();
+            let client = Client::tracked(rocket()).unwrap();
 
             let response = client.get("/hbs/test").dispatch();
             assert_eq!(response.status(), Status::Ok);
@@ -124,10 +136,9 @@ mod templates_tests {
         fn test_template_reload() {
             use std::fs::File;
             use std::io::Write;
-            use std::thread;
             use std::time::Duration;
 
-            use rocket::local::Client;
+            use rocket::local::blocking::Client;
 
             const RELOAD_TEMPLATE: &str = "hbs/reload";
             const INITIAL_TEXT: &str = "initial";
@@ -145,7 +156,7 @@ mod templates_tests {
             write_file(&reload_path, INITIAL_TEXT);
 
             // set up the client. if we can't reload templates, then just quit
-            let client = Client::new(rocket()).unwrap();
+            let client = Client::tracked(rocket()).unwrap();
             let res = client.get("/is_reloading").dispatch();
             if res.status() != Status::Ok {
                 return;
@@ -170,7 +181,7 @@ mod templates_tests {
                 }
 
                 // otherwise, retry a few times, waiting 250ms in between
-                thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(250));
             }
 
             panic!("failed to reload modified template in 1.5s");

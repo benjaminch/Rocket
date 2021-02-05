@@ -1,16 +1,16 @@
-use proc_macro::Span;
-
-use devise::{syn, Spanned};
-use devise::proc_macro2::TokenStream as TokenStream2;
-use devise::ext::TypeExt;
+use indexmap::IndexMap;
+use devise::{Spanned, ext::TypeExt};
 use quote::ToTokens;
 
-use self::syn::{Expr, Ident, LitStr, Path, Token, Type};
-use self::syn::parse::{self, Parse, ParseStream};
-use self::syn::punctuated::Punctuated;
+use crate::syn::{self, Expr, Ident, LitStr, Path, Token, Type};
+use crate::syn::parse::{self, Parse, ParseStream};
+use crate::syn::punctuated::Punctuated;
 
 use crate::http::{uri::Origin, ext::IntoOwned};
-use indexmap::IndexMap;
+use crate::proc_macro2::{TokenStream, Span};
+use crate::syn_ext::NameSource;
+
+// TODO(diag): Use 'Diagnostic' in place of syn::Error.
 
 #[derive(Debug)]
 pub enum ArgExpr {
@@ -21,7 +21,7 @@ pub enum ArgExpr {
 #[derive(Debug)]
 pub enum Arg {
     Unnamed(ArgExpr),
-    Named(Ident, Token![=], ArgExpr),
+    Named(NameSource, Token![=], ArgExpr),
 }
 
 #[derive(Debug)]
@@ -52,7 +52,7 @@ pub enum Validation<'a> {
     // Number expected, what we actually got.
     Unnamed(usize, usize),
     // (Missing, Extra, Duplicate)
-    Named(Vec<&'a Ident>, Vec<&'a Ident>, Vec<&'a Ident>),
+    Named(Vec<NameSource>, Vec<&'a Ident>, Vec<&'a Ident>),
     // Everything is okay; here are the expressions in the route decl order.
     Ok(Vec<&'a ArgExpr>)
 }
@@ -95,7 +95,7 @@ impl Parse for Arg {
             let ident = input.parse::<Ident>()?;
             let eq_token = input.parse::<Token![=]>()?;
             let expr = input.parse::<ArgExpr>()?;
-            Ok(Arg::Named(ident, eq_token, expr))
+            Ok(Arg::Named(ident.into(), eq_token, expr))
         } else {
             let expr = input.parse::<ArgExpr>()?;
             Ok(Arg::Unnamed(expr))
@@ -124,7 +124,7 @@ impl Parse for UriParams {
             })?;
 
             if !input.peek(Token![,]) && input.cursor().eof() {
-                return err(string.span().unstable(), "unexpected end of input: \
+                return err(string.span(), "unexpected end of input: \
                     expected ',' followed by route path");
             }
 
@@ -193,7 +193,7 @@ impl Parse for InternalUriParams {
         // Validation should always succeed since this macro can only be called
         // if the route attribute succeeded, implying a valid route URI.
         let route_uri = Origin::parse_route(&route_uri_str.value())
-            .map(|o| o.to_normalized().into_owned())
+            .map(|o| o.into_normalized().into_owned())
             .map_err(|_| input.error("internal error: invalid route URI"))?;
 
         let content;
@@ -224,16 +224,16 @@ impl InternalUriParams {
                 else { Validation::Ok(args.unnamed().unwrap().collect()) }
             },
             Args::Named(_) => {
-                let mut params: IndexMap<&Ident, Option<&ArgExpr>> = self.fn_args.iter()
-                    .map(|FnArg { ident, .. }| (ident, None))
+                let mut params: IndexMap<NameSource, Option<&ArgExpr>> = self.fn_args.iter()
+                    .map(|FnArg { ident, .. }| (ident.clone().into(), None))
                     .collect();
 
                 let (mut extra, mut dup) = (vec![], vec![]);
-                for (ident, expr) in args.named().unwrap() {
-                    match params.get_mut(ident) {
-                        Some(ref entry) if entry.is_some() => dup.push(ident),
+                for (name, expr) in args.named().unwrap() {
+                    match params.get_mut(name) {
+                        Some(ref entry) if entry.is_some() => dup.push(name.ident()),
                         Some(entry) => *entry = Some(expr),
-                        None => extra.push(ident),
+                        None => extra.push(name.ident()),
                     }
                 }
 
@@ -280,9 +280,9 @@ impl Arg {
         }
     }
 
-    fn named(&self) -> (&Ident, &ArgExpr) {
+    fn named(&self) -> (&NameSource, &ArgExpr) {
         match self {
-            Arg::Named(ident, _, expr) => (ident, expr),
+            Arg::Named(name, _, expr) => (name, expr),
             _ => panic!("Called Arg::named() on an Arg::Unnamed!"),
         }
     }
@@ -295,7 +295,7 @@ impl Args {
         }
     }
 
-    fn named(&self) -> Option<impl Iterator<Item = (&Ident, &ArgExpr)>> {
+    fn named(&self) -> Option<impl Iterator<Item = (&NameSource, &ArgExpr)>> {
         match self {
             Args::Named(args) => Some(args.iter().map(|arg| arg.named())),
             _ => None
@@ -327,7 +327,7 @@ impl ArgExpr {
 }
 
 impl ToTokens for ArgExpr {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             ArgExpr::Expr(e) => e.to_tokens(tokens),
             ArgExpr::Ignored(e) => e.to_tokens(tokens)
@@ -336,16 +336,19 @@ impl ToTokens for ArgExpr {
 }
 
 impl ToTokens for Arg {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             Arg::Unnamed(e) => e.to_tokens(tokens),
-            Arg::Named(ident, eq, expr) => tokens.extend(quote!(#ident #eq #expr)),
+            Arg::Named(name, eq, expr) => {
+                let ident = name.ident();
+                tokens.extend(quote!(#ident #eq #expr))
+            }
         }
     }
 }
 
 impl ToTokens for Args {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             Args::Unnamed(e) | Args::Named(e) => e.to_tokens(tokens)
         }

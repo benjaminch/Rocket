@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 use rocket::request::FlashMessage;
@@ -23,14 +21,14 @@ fn used(flash: Option<FlashMessage<'_, '_>>) -> Option<String> {
 }
 
 mod flash_lazy_remove_tests {
-    use rocket::local::Client;
+    use rocket::local::blocking::Client;
     use rocket::http::Status;
 
     #[test]
     fn test() {
         use super::*;
         let r = rocket::ignite().mount("/", routes![set, unused, used]);
-        let client = Client::new(r).unwrap();
+        let client = Client::tracked(r).unwrap();
 
         // Ensure the cookie's not there at first.
         let response = client.get("/unused").dispatch();
@@ -48,8 +46,8 @@ mod flash_lazy_remove_tests {
         assert_eq!(response.status(), Status::Ok);
 
         // Now use it.
-        let mut response = client.get("/use").dispatch();
-        assert_eq!(response.body_string(), Some(FLASH_MESSAGE.into()));
+        let response = client.get("/use").dispatch();
+        assert_eq!(response.into_string(), Some(FLASH_MESSAGE.into()));
 
         // Now it should be gone.
         let response = client.get("/unused").dispatch();

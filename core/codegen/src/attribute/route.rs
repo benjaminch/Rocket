@@ -1,18 +1,19 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use proc_macro::{TokenStream, Span};
-use crate::proc_macro2::TokenStream as TokenStream2;
-use devise::{syn, Spanned, SpanWrapped, Result, FromMeta, ext::TypeExt};
+use devise::{syn, Spanned, SpanWrapped, Result, FromMeta, Diagnostic};
+use devise::ext::{SpanDiagnosticExt, TypeExt};
 use indexmap::IndexSet;
 
 use crate::proc_macro_ext::{Diagnostics, StringLit};
-use crate::syn_ext::{syn_to_diag, IdentExt};
-use self::syn::{Attribute, parse::Parser};
-
+use crate::syn_ext::{IdentExt, NameSource};
+use crate::proc_macro2::{TokenStream, Span};
 use crate::http_codegen::{Method, MediaType, RoutePath, DataSegment, Optional};
 use crate::attribute::segments::{Source, Kind, Segment};
-use crate::{ROUTE_FN_PREFIX, ROUTE_STRUCT_PREFIX, URI_MACRO_PREFIX, ROCKET_PARAM_PREFIX};
+use crate::syn::{Attribute, parse::Parser};
+
+use crate::{URI_MACRO_PREFIX, ROCKET_PARAM_PREFIX};
 
 /// The raw, parsed `#[route]` attribute.
 #[derive(Debug, FromMeta)]
@@ -38,16 +39,16 @@ struct MethodRouteAttribute {
 /// This structure represents the parsed `route` attribute and associated items.
 #[derive(Debug)]
 struct Route {
-    /// The status associated with the code in the `#[route(code)]` attribute.
+    /// The attribute: `#[get(path, ...)]`.
     attribute: RouteAttribute,
-    /// The function that was decorated with the `route` attribute.
+    /// The function the attribute decorated, i.e, the handler.
     function: syn::ItemFn,
     /// The non-static parameters declared in the route segments.
     segments: IndexSet<Segment>,
-    /// The parsed inputs to the user's function. The first ident is the ident
-    /// as the user wrote it, while the second ident is the identifier that
-    /// should be used during code generation, the `rocket_ident`.
-    inputs: Vec<(syn::Ident, syn::Ident, syn::Type)>,
+    /// The parsed inputs to the user's function. The name is the param as the
+    /// user wrote it, while the ident is the identifier that should be used
+    /// during code generation, the `rocket_ident`.
+    inputs: Vec<(NameSource, syn::Ident, syn::Type)>,
 }
 
 fn parse_route(attr: RouteAttribute, function: syn::ItemFn) -> Result<Route> {
@@ -58,29 +59,30 @@ fn parse_route(attr: RouteAttribute, function: syn::ItemFn) -> Result<Route> {
     if let Some(ref data) = attr.data {
         if !attr.method.0.supports_payload() {
             let msg = format!("'{}' does not typically support payloads", attr.method.0);
+            // FIXME(diag: warning)
             data.full_span.warning("`data` used with non-payload-supporting method")
                 .span_note(attr.method.span, msg)
-                .emit()
+                .emit_as_item_tokens();
         }
     }
 
-    // Collect all of the dynamic segments in an `IndexSet`, checking for dups.
+    // Collect non-wild dynamic segments in an `IndexSet`, checking for dups.
     let mut segments: IndexSet<Segment> = IndexSet::new();
-    fn dup_check<I>(set: &mut IndexSet<Segment>, iter: I, diags: &mut Diagnostics)
-        where I: Iterator<Item = Segment>
+    fn dup_check<'a, I>(set: &mut IndexSet<Segment>, iter: I, diags: &mut Diagnostics)
+        where I: Iterator<Item = &'a Segment>
     {
-        for segment in iter.filter(|s| s.kind != Kind::Static) {
+        for segment in iter.filter(|s| s.is_dynamic()) {
             let span = segment.span;
-            if let Some(previous) = set.replace(segment) {
+            if let Some(previous) = set.replace(segment.clone()) {
                 diags.push(span.error(format!("duplicate parameter: `{}`", previous.name))
                     .span_note(previous.span, "previous parameter with the same name here"))
             }
         }
     }
 
-    dup_check(&mut segments, attr.path.path.iter().cloned(), &mut diags);
-    attr.path.query.as_ref().map(|q| dup_check(&mut segments, q.iter().cloned(), &mut diags));
-    dup_check(&mut segments, attr.data.clone().map(|s| s.value.0).into_iter(), &mut diags);
+    dup_check(&mut segments, attr.path.path.iter().filter(|s| !s.is_wild()), &mut diags);
+    attr.path.query.as_ref().map(|q| dup_check(&mut segments, q.iter(), &mut diags));
+    dup_check(&mut segments, attr.data.as_ref().map(|s| &s.value.0).into_iter(), &mut diags);
 
     // Check the validity of function arguments.
     let mut inputs = vec![];
@@ -108,16 +110,12 @@ fn parse_route(attr: RouteAttribute, function: syn::ItemFn) -> Result<Route> {
         };
 
         let rocket_ident = ident.prepend(ROCKET_PARAM_PREFIX);
-        inputs.push((ident.clone(), rocket_ident, ty.with_stripped_lifetimes()));
+        inputs.push((ident.clone().into(), rocket_ident, ty.with_stripped_lifetimes()));
         fn_segments.insert(ident.into());
     }
 
     // Check that all of the declared parameters are function inputs.
-    let span = match function.sig.inputs.is_empty() {
-        false => function.sig.inputs.span(),
-        true => function.span()
-    };
-
+    let span = function.sig.paren_token.span;
     for missing in segments.difference(&fn_segments) {
         diags.push(missing.span.error("unused dynamic parameter")
             .span_note(span, format!("expected argument named `{}` here", missing.name)))
@@ -126,10 +124,10 @@ fn parse_route(attr: RouteAttribute, function: syn::ItemFn) -> Result<Route> {
     diags.head_err_or(Route { attribute: attr, function, inputs, segments })
 }
 
-fn param_expr(seg: &Segment, ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
-    define_vars_and_mods!(req, data, error, log, request, Outcome);
+fn param_expr(seg: &Segment, ident: &syn::Ident, ty: &syn::Type) -> TokenStream {
+    define_vars_and_mods!(req, data, error, log, request, _None, _Some, _Ok, _Err, Outcome);
     let i = seg.index.expect("dynamic parameters must be indexed");
-    let span = ident.span().unstable().join(ty.span()).unwrap().into();
+    let span = ident.span().join(ty.span()).unwrap_or_else(|| ty.span());
     let name = ident.to_string();
 
     // All dynamic parameter should be found if this function is being called;
@@ -149,20 +147,20 @@ fn param_expr(seg: &Segment, ident: &syn::Ident, ty: &syn::Type) -> TokenStream2
     let expr = match seg.kind {
         Kind::Single => quote_spanned! { span =>
             match #req.raw_segment_str(#i) {
-                Some(__s) => match <#ty as #request::FromParam>::from_param(__s) {
-                    Ok(__v) => __v,
-                    Err(#error) => return #parse_error,
+                #_Some(__s) => match <#ty as #request::FromParam>::from_param(__s) {
+                    #_Ok(__v) => __v,
+                    #_Err(#error) => return #parse_error,
                 },
-                None => return #internal_error
+                #_None => return #internal_error
             }
         },
         Kind::Multi => quote_spanned! { span =>
             match #req.raw_segments(#i) {
-                Some(__s) => match <#ty as #request::FromSegments>::from_segments(__s) {
-                    Ok(__v) => __v,
-                    Err(#error) => return #parse_error,
+                #_Some(__s) => match <#ty as #request::FromSegments>::from_segments(__s) {
+                    #_Ok(__v) => __v,
+                    #_Err(#error) => return #parse_error,
                 },
-                None => return #internal_error
+                #_None => return #internal_error
             }
         },
         Kind::Static => return quote!()
@@ -174,11 +172,11 @@ fn param_expr(seg: &Segment, ident: &syn::Ident, ty: &syn::Type) -> TokenStream2
     }
 }
 
-fn data_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
-    define_vars_and_mods!(req, data, FromData, Outcome, Transform);
-    let span = ident.span().unstable().join(ty.span()).unwrap().into();
+fn data_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream {
+    define_vars_and_mods!(req, data, FromTransformedData, Outcome, Transform);
+    let span = ident.span().join(ty.span()).unwrap_or_else(|| ty.span());
     quote_spanned! { span =>
-        let __transform = <#ty as #FromData>::transform(#req, #data);
+        let __transform = <#ty as #FromTransformedData>::transform(#req, #data).await;
 
         #[allow(unreachable_patterns, unreachable_code)]
         let __outcome = match __transform {
@@ -195,7 +193,7 @@ fn data_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
         };
 
         #[allow(non_snake_case, unreachable_patterns, unreachable_code)]
-        let #ident: #ty = match <#ty as #FromData>::from_data(#req, __outcome) {
+        let #ident: #ty = match <#ty as #FromTransformedData>::from_data(#req, __outcome).await {
             #Outcome::Success(__d) => __d,
             #Outcome::Forward(__d) => return #Outcome::Forward(__d),
             #Outcome::Failure((__c, _)) => return #Outcome::Failure(__c),
@@ -203,19 +201,19 @@ fn data_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
     }
 }
 
-fn query_exprs(route: &Route) -> Option<TokenStream2> {
+fn query_exprs(route: &Route) -> Option<TokenStream> {
+    define_vars_and_mods!(_None, _Some, _Ok, _Err, _Option);
     define_vars_and_mods!(data, trail, log, request, req, Outcome, SmallVec, Query);
     let query_segments = route.attribute.path.query.as_ref()?;
     let (mut decls, mut matchers, mut builders) = (vec![], vec![], vec![]);
     for segment in query_segments {
-        let name = &segment.name;
         let (ident, ty, span) = if segment.kind != Kind::Static {
             let (ident, ty) = route.inputs.iter()
-                .find(|(ident, _, _)| ident == &segment.name)
+                .find(|(name, _, _)| name == &segment.name)
                 .map(|(_, rocket_ident, ty)| (rocket_ident, ty))
                 .unwrap();
 
-            let span = ident.span().unstable().join(ty.span()).unwrap();
+            let span = ident.span().join(ty.span()).unwrap_or_else(|| ty.span());
             (Some(ident), Some(ty), span.into())
         } else {
             (None, None, segment.span.into())
@@ -224,7 +222,7 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
         let decl = match segment.kind {
             Kind::Single => quote_spanned! { span =>
                 #[allow(non_snake_case)]
-                let mut #ident: Option<#ty> = None;
+                let mut #ident: #_Option<#ty> = #_None;
             },
             Kind::Multi => quote_spanned! { span =>
                 #[allow(non_snake_case)]
@@ -233,19 +231,20 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
             Kind::Static => quote!()
         };
 
+        let name = segment.name.name();
         let matcher = match segment.kind {
             Kind::Single => quote_spanned! { span =>
                 (_, #name, __v) => {
                     #[allow(unreachable_patterns, unreachable_code)]
                     let __v = match <#ty as #request::FromFormValue>::from_form_value(__v) {
-                        Ok(__v) => __v,
-                        Err(__e) => {
+                        #_Ok(__v) => __v,
+                        #_Err(__e) => {
                             #log::warn_(&format!("Failed to parse '{}': {:?}", #name, __e));
                             return #Outcome::Forward(#data);
                         }
                     };
 
-                    #ident = Some(__v);
+                    #ident = #_Some(__v);
                 }
             },
             Kind::Static => quote! {
@@ -260,8 +259,8 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
             Kind::Single => quote_spanned! { span =>
                 #[allow(non_snake_case)]
                 let #ident = match #ident.or_else(<#ty as #request::FromFormValue>::default) {
-                    Some(__v) => __v,
-                    None => {
+                    #_Some(__v) => __v,
+                    #_None => {
                         #log::warn_(&format!("Missing required query parameter '{}'.", #name));
                         return #Outcome::Forward(#data);
                     }
@@ -270,8 +269,8 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
             Kind::Multi => quote_spanned! { span =>
                 #[allow(non_snake_case)]
                 let #ident = match <#ty as #request::FromQuery>::from_query(#Query(&#trail)) {
-                    Ok(__v) => __v,
-                    Err(__e) => {
+                    #_Ok(__v) => __v,
+                    #_Err(__e) => {
                         #log::warn_(&format!("Failed to parse '{}': {:?}", #name, __e));
                         return #Outcome::Forward(#data);
                     }
@@ -289,7 +288,7 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
     Some(quote! {
         #(#decls)*
 
-        if let Some(__items) = #req.raw_query_items() {
+        if let #_Some(__items) = #req.raw_query_items() {
             for __i in __items {
                 match (__i.raw.as_str(), __i.key.as_str(), __i.value) {
                     #(
@@ -307,12 +306,12 @@ fn query_exprs(route: &Route) -> Option<TokenStream2> {
     })
 }
 
-fn request_guard_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
+fn request_guard_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream {
     define_vars_and_mods!(req, data, request, Outcome);
-    let span = ident.span().unstable().join(ty.span()).unwrap().into();
+    let span = ident.span().join(ty.span()).unwrap_or_else(|| ty.span());
     quote_spanned! { span =>
         #[allow(non_snake_case, unreachable_patterns, unreachable_code)]
-        let #ident: #ty = match <#ty as #request::FromRequest>::from_request(#req) {
+        let #ident: #ty = match <#ty as #request::FromRequest>::from_request(#req).await {
             #Outcome::Success(__v) => __v,
             #Outcome::Forward(_) => return #Outcome::Forward(#data),
             #Outcome::Failure((__c, _)) => return #Outcome::Failure(__c),
@@ -320,27 +319,30 @@ fn request_guard_expr(ident: &syn::Ident, ty: &syn::Type) -> TokenStream2 {
     }
 }
 
-fn generate_internal_uri_macro(route: &Route) -> TokenStream2 {
+fn generate_internal_uri_macro(route: &Route) -> TokenStream {
+    // Keep a global counter (+ thread ID later) to generate unique ids.
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
     let dynamic_args = route.segments.iter()
         .filter(|seg| seg.source == Source::Path || seg.source == Source::Query)
         .filter(|seg| seg.kind != Kind::Static)
         .map(|seg| &seg.name)
-        .map(|name| route.inputs.iter().find(|(ident, ..)| ident == name).unwrap())
-        .map(|(ident, _, ty)| quote!(#ident: #ty));
+        .map(|seg_name| route.inputs.iter().find(|(in_name, ..)| in_name == seg_name).unwrap())
+        .map(|(name, _, ty)| (name.ident(), ty))
+        .map(|(ident, ty)| quote!(#ident: #ty));
 
     let mut hasher = DefaultHasher::new();
-    let route_span = route.function.span();
-    route_span.source_file().path().hash(&mut hasher);
-    let line_column = route_span.start();
-    line_column.line.hash(&mut hasher);
-    line_column.column.hash(&mut hasher);
+    route.function.sig.ident.hash(&mut hasher);
+    route.attribute.path.origin.0.path().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    COUNTER.fetch_add(1, Ordering::AcqRel).hash(&mut hasher);
 
-    let mut generated_macro_name = route.function.sig.ident.prepend(URI_MACRO_PREFIX);
-    generated_macro_name.set_span(Span::call_site().into());
+    let generated_macro_name = route.function.sig.ident.prepend(URI_MACRO_PREFIX);
     let inner_generated_macro_name = generated_macro_name.append(&hasher.finish().to_string());
     let route_uri = route.attribute.path.origin.0.to_string();
 
-    quote! {
+    quote_spanned! { Span::call_site() =>
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #inner_generated_macro_name {
@@ -356,7 +358,7 @@ fn generate_internal_uri_macro(route: &Route) -> TokenStream2 {
     }
 }
 
-fn generate_respond_expr(route: &Route) -> TokenStream2 {
+fn generate_respond_expr(route: &Route) -> TokenStream {
     let ret_span = match route.function.sig.output {
         syn::ReturnType::Default => route.function.sig.ident.span(),
         syn::ReturnType::Type(_, ref ty) => ty.span().into()
@@ -368,8 +370,13 @@ fn generate_respond_expr(route: &Route) -> TokenStream2 {
     let parameter_names = route.inputs.iter()
         .map(|(_, rocket_ident, _)| rocket_ident);
 
+    let _await = route.function.sig.asyncness.map(|a| quote_spanned!(a.span().into() => .await));
+    let responder_stmt = quote_spanned! { ret_span =>
+        let ___responder = #user_handler_fn_name(#(#parameter_names),*) #_await;
+    };
+
     quote_spanned! { ret_span =>
-        let ___responder = #user_handler_fn_name(#(#parameter_names),*);
+        #responder_stmt
         #handler::Outcome::from(#req, ___responder)
     }
 }
@@ -379,8 +386,8 @@ fn codegen_route(route: Route) -> Result<TokenStream> {
     let mut data_stmt = None;
     let mut req_guard_definitions = vec![];
     let mut parameter_definitions = vec![];
-    for (ident, rocket_ident, ty) in &route.inputs {
-        let fn_segment: Segment = ident.into();
+    for (name, rocket_ident, ty) in &route.inputs {
+        let fn_segment: Segment = name.ident().into();
         match route.segments.get(&fn_segment) {
             Some(seg) if seg.source == Source::Path => {
                 parameter_definitions.push(param_expr(seg, rocket_ident, &ty));
@@ -402,11 +409,9 @@ fn codegen_route(route: Route) -> Result<TokenStream> {
     }
 
     // Gather everything we need.
-    define_vars_and_mods!(req, data, handler, Request, Data, StaticRouteInfo);
+    define_vars_and_mods!(req, data, _Box, Request, Data, Route, StaticRouteInfo, HandlerFuture);
     let (vis, user_handler_fn) = (&route.function.vis, &route.function);
     let user_handler_fn_name = &user_handler_fn.sig.ident;
-    let generated_fn_name = user_handler_fn_name.prepend(ROUTE_FN_PREFIX);
-    let generated_struct_name = user_handler_fn_name.prepend(ROUTE_STRUCT_PREFIX);
     let generated_internal_uri_macro = generate_internal_uri_macro(&route);
     let generated_respond_expr = generate_respond_expr(&route);
 
@@ -418,41 +423,58 @@ fn codegen_route(route: Route) -> Result<TokenStream> {
     Ok(quote! {
         #user_handler_fn
 
-        /// Rocket code generated wrapping route function.
-        #vis fn #generated_fn_name<'_b>(
-            #req: &'_b #Request,
-            #data: #Data
-        ) -> #handler::Outcome<'_b> {
-            #(#req_guard_definitions)*
-            #(#parameter_definitions)*
-            #data_stmt
+        #[doc(hidden)]
+        #[allow(non_camel_case_types)]
+        /// Rocket code generated proxy structure.
+        #vis struct #user_handler_fn_name {  }
 
-            #generated_respond_expr
+        /// Rocket code generated proxy static conversion implementation.
+        impl From<#user_handler_fn_name> for #StaticRouteInfo {
+            fn from(_: #user_handler_fn_name) -> #StaticRouteInfo {
+                fn monomorphized_function<'_b>(
+                    #req: &'_b #Request,
+                    #data: #Data
+                ) -> #HandlerFuture<'_b> {
+                    #_Box::pin(async move {
+                        #(#req_guard_definitions)*
+                        #(#parameter_definitions)*
+                        #data_stmt
+
+                        #generated_respond_expr
+                    })
+                }
+
+                #StaticRouteInfo {
+                    name: stringify!(#user_handler_fn_name),
+                    method: #method,
+                    path: #path,
+                    handler: monomorphized_function,
+                    format: #format,
+                    rank: #rank,
+                }
+            }
+        }
+
+        /// Rocket code generated proxy conversion implementation.
+        impl From<#user_handler_fn_name> for #Route {
+            #[inline]
+            fn from(_: #user_handler_fn_name) -> #Route {
+                #StaticRouteInfo::from(#user_handler_fn_name {}).into()
+            }
         }
 
         /// Rocket code generated wrapping URI macro.
         #generated_internal_uri_macro
-
-        /// Rocket code generated static route info.
-        #[allow(non_upper_case_globals)]
-        #vis static #generated_struct_name: #StaticRouteInfo =
-            #StaticRouteInfo {
-                name: stringify!(#user_handler_fn_name),
-                method: #method,
-                path: #path,
-                handler: #generated_fn_name,
-                format: #format,
-                rank: #rank,
-            };
     }.into())
 }
 
-fn complete_route(args: TokenStream2, input: TokenStream) -> Result<TokenStream> {
-    let function: syn::ItemFn = syn::parse(input).map_err(syn_to_diag)
+fn complete_route(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
+    let function: syn::ItemFn = syn::parse2(input)
+        .map_err(|e| Diagnostic::from(e))
         .map_err(|diag| diag.help("`#[route]` can only be used on functions"))?;
 
     let full_attr = quote!(#[route(#args)]);
-    let attrs = Attribute::parse_outer.parse2(full_attr).map_err(syn_to_diag)?;
+    let attrs = Attribute::parse_outer.parse2(full_attr)?;
     let attribute = match RouteAttribute::from_attrs("route", &attrs) {
         Some(result) => result?,
         None => return Err(Span::call_site().error("internal error: bad attribute"))
@@ -463,7 +485,7 @@ fn complete_route(args: TokenStream2, input: TokenStream) -> Result<TokenStream>
 
 fn incomplete_route(
     method: crate::http::Method,
-    args: TokenStream2,
+    args: TokenStream,
     input: TokenStream
 ) -> Result<TokenStream> {
     let method_str = method.to_string().to_lowercase();
@@ -473,11 +495,12 @@ fn incomplete_route(
 
     let method_ident = syn::Ident::new(&method_str, method_span.into());
 
-    let function: syn::ItemFn = syn::parse(input).map_err(syn_to_diag)
+    let function: syn::ItemFn = syn::parse2(input)
+        .map_err(|e| Diagnostic::from(e))
         .map_err(|d| d.help(format!("#[{}] can only be used on functions", method_str)))?;
 
     let full_attr = quote!(#[#method_ident(#args)]);
-    let attrs = Attribute::parse_outer.parse2(full_attr).map_err(syn_to_diag)?;
+    let attrs = Attribute::parse_outer.parse2(full_attr)?;
     let method_attribute = match MethodRouteAttribute::from_attrs(&method_str, &attrs) {
         Some(result) => result?,
         None => return Err(Span::call_site().error("internal error: bad attribute"))
@@ -498,13 +521,13 @@ fn incomplete_route(
 
 pub fn route_attribute<M: Into<Option<crate::http::Method>>>(
     method: M,
-    args: TokenStream,
-    input: TokenStream
+    args: proc_macro::TokenStream,
+    input: proc_macro::TokenStream
 ) -> TokenStream {
     let result = match method.into() {
-        Some(method) => incomplete_route(method, args.into(), input),
-        None => complete_route(args.into(), input)
+        Some(method) => incomplete_route(method, args.into(), input.into()),
+        None => complete_route(args.into(), input.into())
     };
 
-    result.unwrap_or_else(|diag| { diag.emit(); TokenStream::new() })
+    result.unwrap_or_else(|diag| diag.emit_as_item_tokens())
 }

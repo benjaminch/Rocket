@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
-use devise::{Spanned, Result};
+use devise::{Spanned, Result, ext::SpanDiagnosticExt};
+
 use crate::syn::{DataStruct, Fields, Data, Type, LitStr, DeriveInput, Ident, Visibility};
 
 #[derive(Debug)]
@@ -25,9 +26,7 @@ const NO_GENERIC_STRUCTS: &str = "`database` attribute cannot be applied to stru
 
 fn parse_invocation(attr: TokenStream, input: TokenStream) -> Result<DatabaseInvocation> {
     let attr_stream2 = crate::proc_macro2::TokenStream::from(attr);
-    let attr_span = attr_stream2.span();
-    let string_lit = crate::syn::parse2::<LitStr>(attr_stream2)
-        .map_err(|_| attr_span.error("expected string literal"))?;
+    let string_lit = crate::syn::parse2::<LitStr>(attr_stream2)?;
 
     let input = crate::syn::parse::<DeriveInput>(input).unwrap();
     if !input.generics.params.is_empty() {
@@ -65,92 +64,56 @@ pub fn database_attr(attr: TokenStream, input: TokenStream) -> Result<TokenStrea
     let name = &invocation.db_name;
     let guard_type = &invocation.type_name;
     let vis = &invocation.visibility;
-    let pool_type = Ident::new(&format!("{}Pool", guard_type), guard_type.span());
     let fairing_name = format!("'{}' Database Pool", name);
     let span = conn_type.span().into();
 
     // A few useful paths.
     let databases = quote_spanned!(span => ::rocket_contrib::databases);
-    let Poolable = quote_spanned!(span => #databases::Poolable);
-    let r2d2 = quote_spanned!(span => #databases::r2d2);
     let request = quote!(::rocket::request);
 
-    let generated_types = quote_spanned! { span =>
-        /// The request guard type.
-        #vis struct #guard_type(pub #r2d2::PooledConnection<<#conn_type as #Poolable>::Manager>);
-
-        /// The pool type.
-        #vis struct #pool_type(#r2d2::Pool<<#conn_type as #Poolable>::Manager>);
+    let request_guard_type = quote_spanned! { span =>
+        #vis struct #guard_type(#databases::Connection<Self, #conn_type>);
     };
 
+    let pool = quote_spanned!(span => #databases::ConnectionPool<Self, #conn_type>);
+    let conn = quote_spanned!(span => #databases::Connection<Self, #conn_type>);
+
     Ok(quote! {
-        #generated_types
+        #request_guard_type
 
         impl #guard_type {
             /// Returns a fairing that initializes the associated database
             /// connection pool.
             pub fn fairing() -> impl ::rocket::fairing::Fairing {
-                use #databases::Poolable;
-
-                ::rocket::fairing::AdHoc::on_attach(#fairing_name, |rocket| {
-                    let pool = #databases::database_config(#name, rocket.config())
-                        .map(<#conn_type>::pool);
-
-                    match pool {
-                        Ok(Ok(p)) => Ok(rocket.manage(#pool_type(p))),
-                        Err(config_error) => {
-                            ::rocket::logger::error(
-                                &format!("Database configuration failure: '{}'", #name));
-                            ::rocket::logger::error_(&format!("{}", config_error));
-                            Err(rocket)
-                        },
-                        Ok(Err(pool_error)) => {
-                            ::rocket::logger::error(
-                                &format!("Failed to initialize pool for '{}'", #name));
-                            ::rocket::logger::error_(&format!("{:?}", pool_error));
-                            Err(rocket)
-                        },
-                    }
-                })
+                <#pool>::fairing(#fairing_name, #name)
             }
 
             /// Retrieves a connection of type `Self` from the `rocket`
             /// instance. Returns `Some` as long as `Self::fairing()` has been
-            /// attached and there is at least one connection in the pool.
-            pub fn get_one(rocket: &::rocket::Rocket) -> Option<Self> {
-                rocket.state::<#pool_type>()
-                    .and_then(|pool| pool.0.get().ok())
-                    .map(#guard_type)
+            /// attached.
+            pub async fn get_one(__rocket: &::rocket::Rocket) -> Option<Self> {
+                <#pool>::get_one(&__rocket).await.map(Self)
+            }
+
+            /// Runs the provided closure on a thread from a threadpool. The
+            /// closure will be passed an `&mut r2d2::PooledConnection`.
+            /// `.await`ing the return value of this function yields the value
+            /// returned by the closure.
+            pub async fn run<F, R>(&self, __f: F) -> R
+            where
+                F: FnOnce(&mut #conn_type) -> R + Send + 'static,
+                R: Send + 'static,
+            {
+                self.0.run(__f).await
             }
         }
 
-        impl ::std::ops::Deref for #guard_type {
-            type Target = #conn_type;
-
-            #[inline(always)]
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl ::std::ops::DerefMut for #guard_type {
-            #[inline(always)]
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-
+        #[::rocket::async_trait]
         impl<'a, 'r> #request::FromRequest<'a, 'r> for #guard_type {
             type Error = ();
 
-            fn from_request(request: &'a #request::Request<'r>) -> #request::Outcome<Self, ()> {
-                use ::rocket::{Outcome, http::Status};
-                let pool = ::rocket::try_outcome!(request.guard::<::rocket::State<#pool_type>>());
-
-                match pool.0.get() {
-                    Ok(conn) => Outcome::Success(#guard_type(conn)),
-                    Err(_) => Outcome::Failure((Status::ServiceUnavailable, ())),
-                }
+            async fn from_request(__r: &'a #request::Request<'r>) -> #request::Outcome<Self, ()> {
+                <#conn>::from_request(__r).await.map(Self)
             }
         }
     }.into())

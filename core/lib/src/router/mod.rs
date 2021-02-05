@@ -1,20 +1,16 @@
 mod collider;
 mod route;
 
-use std::collections::hash_map::HashMap;
-
-pub use self::route::Route;
+use std::collections::HashMap;
 
 use crate::request::Request;
 use crate::http::Method;
+use crate::handler::dummy;
+
+pub use self::route::Route;
 
 // type Selector = (Method, usize);
 type Selector = Method;
-
-// A handler to use when one is needed temporarily.
-pub(crate) fn dummy_handler<'r>(r: &'r crate::Request<'_>, _: crate::Data) -> crate::handler::Outcome<'r> {
-    crate::Outcome::from(r, ())
-}
 
 #[derive(Default)]
 pub struct Router {
@@ -48,7 +44,7 @@ impl Router {
         matches
     }
 
-    pub(crate) fn collisions(mut self) -> Result<Router, Vec<(Route, Route)>> {
+    pub(crate) fn collisions(&mut self) -> Result<(), Vec<(Route, Route)>> {
         let mut collisions = vec![];
         for routes in self.routes.values_mut() {
             for i in 0..routes.len() {
@@ -56,9 +52,9 @@ impl Router {
                 for a_route in left.iter_mut() {
                     for b_route in right.iter_mut() {
                         if a_route.collides_with(b_route) {
-                            let dummy_a = Route::new(Method::Get, "/", dummy_handler);
+                            let dummy_a = Route::new(Method::Get, "/", dummy);
                             let a = std::mem::replace(a_route, dummy_a);
-                            let dummy_b = Route::new(Method::Get, "/", dummy_handler);
+                            let dummy_b = Route::new(Method::Get, "/", dummy);
                             let b = std::mem::replace(b_route, dummy_b);
                             collisions.push((a, b));
                         }
@@ -68,7 +64,7 @@ impl Router {
         }
 
         if collisions.is_empty() {
-            Ok(self)
+            Ok(())
         } else {
             Err(collisions)
         }
@@ -98,19 +94,19 @@ impl Router {
 
 #[cfg(test)]
 mod test {
-    use super::{Router, Route, dummy_handler};
+    use super::{Router, Route};
 
     use crate::rocket::Rocket;
     use crate::config::Config;
-    use crate::http::Method;
-    use crate::http::Method::*;
+    use crate::http::{Method, Method::*};
     use crate::http::uri::Origin;
     use crate::request::Request;
+    use crate::handler::dummy;
 
     fn router_with_routes(routes: &[&'static str]) -> Router {
         let mut router = Router::new();
         for route in routes {
-            let route = Route::new(Get, route.to_string(), dummy_handler);
+            let route = Route::new(Get, route.to_string(), dummy);
             router.add(route);
         }
 
@@ -120,7 +116,7 @@ mod test {
     fn router_with_ranked_routes(routes: &[(isize, &'static str)]) -> Router {
         let mut router = Router::new();
         for &(rank, route) in routes {
-            let route = Route::ranked(rank, Get, route.to_string(), dummy_handler);
+            let route = Route::ranked(rank, Get, route.to_string(), dummy);
             router.add(route);
         }
 
@@ -130,7 +126,7 @@ mod test {
     fn router_with_unranked_routes(routes: &[&'static str]) -> Router {
         let mut router = Router::new();
         for route in routes {
-            let route = Route::ranked(0, Get, route.to_string(), dummy_handler);
+            let route = Route::ranked(0, Get, route.to_string(), dummy);
             router.add(route);
         }
 
@@ -163,6 +159,12 @@ mod test {
         assert!(unranked_route_collisions(&["/a/<a..>", "/a/<a..>"]));
         assert!(unranked_route_collisions(&["/a/b/<a..>", "/a/<a..>"]));
         assert!(unranked_route_collisions(&["/a/b/c/d", "/a/<a..>"]));
+        assert!(unranked_route_collisions(&["/<_>", "/<_>"]));
+        assert!(unranked_route_collisions(&["/a/<_>", "/a/b"]));
+        assert!(unranked_route_collisions(&["/a/<_>", "/a/<b>"]));
+        assert!(unranked_route_collisions(&["/<_..>", "/a/b"]));
+        assert!(unranked_route_collisions(&["/<_..>", "/<_>"]));
+        assert!(unranked_route_collisions(&["/<_>/b", "/a/b"]));
     }
 
     #[test]
@@ -179,6 +181,11 @@ mod test {
         assert!(unranked_route_collisions(&["/a/<a..>/", "/a/bd/e/"]));
         assert!(unranked_route_collisions(&["/a/<a..>//", "/a/b//c//d/e/"]));
         assert!(unranked_route_collisions(&["/a//<a..>//", "/a/b//c//d/e/"]));
+        assert!(unranked_route_collisions(&["///<_>", "/<_>"]));
+        assert!(unranked_route_collisions(&["/a/<_>", "///a//b"]));
+        assert!(unranked_route_collisions(&["//a///<_>", "/a//<b>"]));
+        assert!(unranked_route_collisions(&["//<_..>", "/a/b"]));
+        assert!(unranked_route_collisions(&["//<_..>", "/<_>"]));
     }
 
     #[test]
@@ -201,6 +208,11 @@ mod test {
         assert!(!unranked_route_collisions(&["/a/b/c/d", "/a/b/c/<d>/e"]));
         assert!(!unranked_route_collisions(&["/a/d/<b..>", "/a/b/c"]));
         assert!(!unranked_route_collisions(&["/a/d/<b..>", "/a/d"]));
+        assert!(!unranked_route_collisions(&["/<_>", "/"]));
+        assert!(!unranked_route_collisions(&["/a/<_>", "/a"]));
+        assert!(!unranked_route_collisions(&["/a/<_..>", "/a"]));
+        assert!(!unranked_route_collisions(&["/a/<_..>", "/<_>"]));
+        assert!(!unranked_route_collisions(&["/a/<_>", "/<_>"]));
     }
 
     #[test]
@@ -211,6 +223,9 @@ mod test {
         assert!(!default_rank_route_collisions(&["/hi", "/<hi>"]));
         assert!(!default_rank_route_collisions(&["/hi", "/<hi>"]));
         assert!(!default_rank_route_collisions(&["/a/b", "/a/b/<c..>"]));
+        assert!(!default_rank_route_collisions(&["/<_>", "/static"]));
+        assert!(!default_rank_route_collisions(&["/<_>/<_>", "/foo/bar"]));
+        assert!(!default_rank_route_collisions(&["/foo/<_>", "/foo/bar"]));
     }
 
     #[test]
@@ -228,7 +243,7 @@ mod test {
     }
 
     fn route<'a>(router: &'a Router, method: Method, uri: &str) -> Option<&'a Route> {
-        let rocket = Rocket::custom(Config::development());
+        let rocket = Rocket::custom(Config::default());
         let request = Request::new(&rocket, method, Origin::parse(uri).unwrap());
         let matches = router.route(&request);
         if matches.len() > 0 {
@@ -239,7 +254,7 @@ mod test {
     }
 
     fn matches<'a>(router: &'a Router, method: Method, uri: &str) -> Vec<&'a Route> {
-        let rocket = Rocket::custom(Config::development());
+        let rocket = Rocket::custom(Config::default());
         let request = Request::new(&rocket, method, Origin::parse(uri).unwrap());
         router.route(&request)
     }
@@ -262,9 +277,9 @@ mod test {
         assert!(route(&router, Get, "/jdlk/asdij").is_some());
 
         let mut router = Router::new();
-        router.add(Route::new(Put, "/hello".to_string(), dummy_handler));
-        router.add(Route::new(Post, "/hello".to_string(), dummy_handler));
-        router.add(Route::new(Delete, "/hello".to_string(), dummy_handler));
+        router.add(Route::new(Put, "/hello".to_string(), dummy));
+        router.add(Route::new(Post, "/hello".to_string(), dummy));
+        router.add(Route::new(Delete, "/hello".to_string(), dummy));
         assert!(route(&router, Put, "/hello").is_some());
         assert!(route(&router, Post, "/hello").is_some());
         assert!(route(&router, Delete, "/hello").is_some());

@@ -16,14 +16,6 @@ pub enum Kind {
     Multi,
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum Source {
-    Path,
-    Query,
-    Data,
-    Unknown,
-}
-
 #[derive(Debug, Clone)]
 pub struct RouteSegment<'a, P: UriPart> {
     pub string: Cow<'a, str>,
@@ -59,22 +51,33 @@ pub enum Error<'a> {
     Trailing(&'a str)
 }
 
+impl std::fmt::Display for Error<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Empty => "parameter names cannot be empty".fmt(f),
+            Ident(name) => write!(f, "`{}` is not a valid identifier", name),
+            Ignored => "parameter must be named".fmt(f),
+            MissingClose => "parameter is missing a closing bracket".fmt(f),
+            Malformed => "malformed parameter or identifier".fmt(f),
+            Uri => "segment contains invalid URI characters".fmt(f),
+            Trailing(i) => write!(f, "unexpected trailing text after `{}`", i)
+        }
+    }
+}
+
 pub type SResult<'a, P> = Result<RouteSegment<'a, P>, (&'a str, Error<'a>)>;
 
 #[inline]
 fn is_ident_start(c: char) -> bool {
-    ('a' <= c && c <= 'z')
-        || ('A' <= c && c <= 'Z')
+    c.is_ascii_alphabetic()
         || c == '_'
         || (c > '\x7f' && UnicodeXID::is_xid_start(c))
 }
 
 #[inline]
 fn is_ident_continue(c: char) -> bool {
-    ('a' <= c && c <= 'z')
-        || ('A' <= c && c <= 'Z')
+    c.is_ascii_alphanumeric()
         || c == '_'
-        || ('0' <= c && c <= '9')
         || (c > '\x7f' && UnicodeXID::is_xid_continue(c))
 }
 
@@ -103,7 +106,8 @@ impl<'a, P: UriPart> RouteSegment<'a, P> {
                 return Err(Empty);
             } else if !is_valid_ident(name) {
                 return Err(Ident(name));
-            } else if name == "_" {
+            } else if name == "_" && P::DELIMITER != '/' {
+                // Only path segments may be ignored.
                 return Err(Ignored);
             }
 
@@ -132,6 +136,7 @@ impl<'a, P: UriPart> RouteSegment<'a, P> {
         string: &'a str,
     ) -> impl Iterator<Item = SResult<'_, P>> {
         let mut last_multi_seg: Option<&str> = None;
+        // We check for empty segments when we parse an `Origin` in `FromMeta`.
         string.split(P::DELIMITER)
             .filter(|s| !s.is_empty())
             .enumerate()

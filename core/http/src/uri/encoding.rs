@@ -1,14 +1,35 @@
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use percent_encoding::{EncodeSet, utf8_percent_encode};
+use percent_encoding::{AsciiSet, utf8_percent_encode};
 
 use crate::uri::{UriPart, Path, Query};
-use crate::parse::uri::is_pchar;
+use crate::parse::uri::tables::PATH_CHARS;
 
 #[derive(Clone, Copy)]
 #[allow(non_camel_case_types)]
 pub struct UNSAFE_ENCODE_SET<P: UriPart>(PhantomData<P>);
+pub trait EncodeSet {
+    const SET: AsciiSet;
+}
+
+const fn set_from_table(table: &'static [u8; 256]) -> AsciiSet {
+    const ASCII_RANGE_LEN: u8 = 0x80;
+
+    let mut set = percent_encoding::CONTROLS.add(0);
+    let mut i: u8 = 0;
+    while i < ASCII_RANGE_LEN {
+        if table[i as usize] == 0 {
+            set = set.add(i);
+        }
+
+        i += 1;
+    }
+
+    set
+}
+
+const PATH_SET: AsciiSet = set_from_table(&PATH_CHARS);
 
 impl<P: UriPart> Default for UNSAFE_ENCODE_SET<P> {
     #[inline(always)]
@@ -16,17 +37,15 @@ impl<P: UriPart> Default for UNSAFE_ENCODE_SET<P> {
 }
 
 impl EncodeSet for UNSAFE_ENCODE_SET<Path> {
-    #[inline(always)]
-    fn contains(&self, byte: u8) -> bool {
-        !is_pchar(byte) || byte == b'%'
-    }
+    const SET: AsciiSet = PATH_SET
+        .add(b'%');
 }
 
 impl EncodeSet for UNSAFE_ENCODE_SET<Query> {
-    #[inline(always)]
-    fn contains(&self, byte: u8) -> bool {
-        (!is_pchar(byte) && (byte != b'?')) || byte == b'%' || byte == b'+'
-    }
+    const SET: AsciiSet = PATH_SET
+        .remove(b'?')
+        .add(b'%')
+        .add(b'+');
 }
 
 #[derive(Clone, Copy)]
@@ -34,20 +53,14 @@ impl EncodeSet for UNSAFE_ENCODE_SET<Query> {
 pub struct ENCODE_SET<P: UriPart>(PhantomData<P>);
 
 impl EncodeSet for ENCODE_SET<Path> {
-    #[inline(always)]
-    fn contains(&self, byte: u8) -> bool {
-        <UNSAFE_ENCODE_SET<Path>>::default().contains(byte) || byte == b'/'
-    }
+    const SET: AsciiSet = <UNSAFE_ENCODE_SET<Path>>::SET
+        .add(b'/');
 }
 
 impl EncodeSet for ENCODE_SET<Query> {
-    #[inline(always)]
-    fn contains(&self, byte: u8) -> bool {
-        <UNSAFE_ENCODE_SET<Query>>::default().contains(byte) || match byte {
-            b'&' | b'=' => true,
-            _ => false
-        }
-    }
+    const SET: AsciiSet = <UNSAFE_ENCODE_SET<Query>>::SET
+        .add(b'&')
+        .add(b'=');
 }
 
 #[derive(Default, Clone, Copy)]
@@ -55,11 +68,15 @@ impl EncodeSet for ENCODE_SET<Query> {
 pub struct DEFAULT_ENCODE_SET;
 
 impl EncodeSet for DEFAULT_ENCODE_SET {
-    #[inline(always)]
-    fn contains(&self, byte: u8) -> bool {
-        ENCODE_SET::<Path>(PhantomData).contains(byte) ||
-            ENCODE_SET::<Query>(PhantomData).contains(byte)
-    }
+    // DEFAULT_ENCODE_SET Includes:
+    // * ENCODE_SET<Path> (and UNSAFE_ENCODE_SET<Path>)
+    const SET: AsciiSet = <ENCODE_SET<Path>>::SET
+        // * UNSAFE_ENCODE_SET<Query>
+        .add(b'%')
+        .add(b'+')
+        // * ENCODE_SET<Query>
+        .add(b'&')
+        .add(b'=');
 }
 
 pub fn unsafe_percent_encode<P: UriPart>(string: &str) -> Cow<'_, str> {
@@ -71,5 +88,5 @@ pub fn unsafe_percent_encode<P: UriPart>(string: &str) -> Cow<'_, str> {
 }
 
 pub fn percent_encode<S: EncodeSet + Default>(string: &str) -> Cow<'_, str> {
-    utf8_percent_encode(string, S::default()).into()
+    utf8_percent_encode(string, &S::SET).into()
 }

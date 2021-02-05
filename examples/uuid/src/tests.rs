@@ -1,15 +1,15 @@
 use super::rocket;
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 use rocket::http::Status;
 
 fn test(uri: &str, expected: &str) {
-    let client = Client::new(rocket()).unwrap();
-    let mut res = client.get(uri).dispatch();
-    assert_eq!(res.body_string(), Some(expected.into()));
+    let client = Client::tracked(rocket()).unwrap();
+    let res = client.get(uri).dispatch();
+    assert_eq!(res.into_string(), Some(expected.into()));
 }
 
 fn test_404(uri: &str) {
-    let client = Client::new(rocket()).unwrap();
+    let client = Client::tracked(rocket()).unwrap();
     let res = client.get(uri).dispatch();
     assert_eq!(res.status(), Status::NotFound);
 }

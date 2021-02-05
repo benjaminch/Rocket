@@ -1,53 +1,59 @@
-use devise::*;
-use proc_macro::TokenStream;
+use devise::{*, ext::SpanDiagnosticExt};
+
+use crate::proc_macro2::TokenStream;
+use crate::syn_ext::NameSource;
 
 #[derive(FromMeta)]
 struct Form {
-    value: String,
+    value: NameSource,
 }
 
-pub fn derive_from_form_value(input: TokenStream) -> TokenStream {
+pub fn derive_from_form_value(input: proc_macro::TokenStream) -> TokenStream {
+    define_vars_and_mods!(_Ok, _Err, _Result);
     DeriveGenerator::build_for(input, quote!(impl<'__v> ::rocket::request::FromFormValue<'__v>))
         .generic_support(GenericSupport::None)
         .data_support(DataSupport::Enum)
-        .validate_enum(|generator, data| {
+        .validate_enum(|_, data| {
             // This derive only works for variants that are nullary.
             for variant in data.variants() {
                 if !variant.fields().is_empty() {
-                    return Err(variant.span().error("variants cannot have fields"));
+                    return Err(variant.fields().span().error("variants cannot have fields"));
                 }
             }
 
             // Emit a warning if the enum is empty.
             if data.variants.is_empty() {
-                generator.input.span().warning("deriving for empty enum").emit();
+                return Err(data.brace_token.span.error("enum must have at least one field"));
             }
 
             Ok(())
         })
-        .function(|_, inner| quote! {
+        .function(move |_, inner| quote! {
             type Error = &'__v ::rocket::http::RawStr;
 
             fn from_form_value(
                 value: &'__v ::rocket::http::RawStr
-            ) -> ::std::result::Result<Self, Self::Error> {
+            ) -> #_Result<Self, Self::Error> {
                 let uncased = value.as_uncased_str();
                 #inner
-                ::std::result::Result::Err(value)
+                #_Err(value)
             }
         })
         .try_map_enum(null_enum_mapper)
         .try_map_variant(|_, variant| {
-            let variant_str = Form::from_attrs("form", &variant.attrs)
-                .unwrap_or_else(|| Ok(Form { value: variant.ident.to_string() }))?
+            define_vars_and_mods!(_Ok);
+            let variant_name_source = Form::from_attrs("form", &variant.attrs)
+                .unwrap_or_else(|| Ok(Form { value: variant.ident.clone().into() }))?
                 .value;
 
-            let builder = variant.builder(|_| unreachable!());
+            let variant_str = variant_name_source.name();
+
+            let builder = variant.builder(|_| unreachable!("no fields"));
             Ok(quote! {
                 if uncased == #variant_str {
-                    return ::std::result::Result::Ok(#builder);
+                    return #_Ok(#builder);
                 }
             })
         })
-        .to_tokens()
+        .to_tokens2()
 }

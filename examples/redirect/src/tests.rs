@@ -1,15 +1,15 @@
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 use rocket::http::Status;
 
 fn client() -> Client {
     let rocket = rocket::ignite().mount("/", routes![super::root, super::login]);
-    Client::new(rocket).unwrap()
+    Client::tracked(rocket).unwrap()
 }
 
 #[test]
 fn test_root() {
     let client = client();
-    let mut response = client.get("/").dispatch();
+    let response = client.get("/").dispatch();
 
     assert!(response.body().is_none());
     assert_eq!(response.status(), Status::SeeOther);
@@ -25,6 +25,6 @@ fn test_root() {
 #[test]
 fn test_login() {
     let client = client();
-    let mut r = client.get("/login").dispatch();
-    assert_eq!(r.body_string(), Some("Hi! Please log in before continuing.".into()));
+    let r = client.get("/login").dispatch();
+    assert_eq!(r.into_string(), Some("Hi! Please log in before continuing.".into()));
 }

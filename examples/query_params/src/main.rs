@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
 #[cfg(test)] mod tests;
@@ -8,6 +6,8 @@ use rocket::request::{Form, LenientForm};
 
 #[derive(FromForm)]
 struct Person {
+    /// Use the `form` attribute to expect an invalid Rust identifier in the HTTP form.
+    #[form(field = "first-name")]
     name: String,
     age: Option<u8>
 }
@@ -30,10 +30,7 @@ fn hello_20(person: LenientForm<Person>) -> String {
     format!("20 years old? Hi, {}!", person.name)
 }
 
+#[launch]
 fn rocket() -> rocket::Rocket {
     rocket::ignite().mount("/", routes![hello, hello_20])
-}
-
-fn main() {
-    rocket().launch();
 }

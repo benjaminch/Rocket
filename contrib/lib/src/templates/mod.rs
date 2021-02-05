@@ -37,7 +37,6 @@
 //!      of the template file minus the last two extensions, from a handler.
 //!
 //!      ```rust
-//!      # #![feature(proc_macro_hygiene)]
 //!      # #[macro_use] extern crate rocket;
 //!      # #[macro_use] extern crate rocket_contrib;
 //!      # fn context() {  }
@@ -57,7 +56,7 @@
 //! template directory is configured via the `template_dir` configuration
 //! parameter and defaults to `templates/`. The path set in `template_dir` is
 //! relative to the Rocket configuration file. See the [configuration
-//! chapter](https://rocket.rs/v0.5/guide/configuration/#extras) of the guide
+//! chapter](https://rocket.rs/master/guide/configuration/#extras) of the guide
 //! for more information on configuration.
 //!
 //! The corresponding templating engine used for a given template is based on a
@@ -66,10 +65,10 @@
 //!
 //! | Engine       | Version | Extension |
 //! |--------------|---------|-----------|
-//! | [Tera]       | 0.11    | `.tera`   |
+//! | [Tera]       | 1       | `.tera`   |
 //! | [Handlebars] | 2       | `.hbs`    |
 //!
-//! [Tera]: https://docs.rs/crate/tera/0.11
+//! [Tera]: https://docs.rs/crate/tera/1
 //! [Handlebars]: https://docs.rs/crate/handlebars/2
 //!
 //! Any file that ends with one of these extension will be discovered and
@@ -94,27 +93,23 @@
 //! ## Template Fairing
 //!
 //! Template discovery is actualized by the template fairing, which itself is
-//! created via [`Template::fairing()`] or [`Template::custom()`], the latter of
-//! which allows for customizations to the templating engine. In order for _any_
-//! templates to be rendered, the template fairing _must_ be
-//! [attached](rocket::Rocket::attach()) to the running Rocket instance. Failure
-//! to do so will result in a run-time error.
+//! created via [`Template::fairing()`], [`Template::custom()`], or
+//! [`Template::try_custom()`], the latter two allowing customizations to
+//! enabled templating engines. In order for _any_ templates to be rendered, the
+//! template fairing _must_ be [attached](rocket::Rocket::attach()) to the
+//! running Rocket instance. Failure to do so will result in a run-time error.
 //!
 //! Templates are rendered with the `render` method. The method takes in the
 //! name of a template and a context to render the template with. The context
 //! can be any type that implements [`Serialize`] from [`serde`] and would
 //! serialize to an `Object` value.
 //!
-//! In debug mode (without the `--release` flag passed to `cargo`), templates
+//! In debug mode (without the `--release` flag passed to `rocket`), templates
 //! will be automatically reloaded from disk if any changes have been made to
 //! the templates directory since the previous request. In release builds,
 //! template reloading is disabled to improve performance and cannot be enabled.
 //!
 //! [`Serialize`]: serde::Serialize
-//! [`Template`]: templates::Template
-//! [`Template::fairing()`]: templates::Template::fairing()
-//! [`Template::custom()`]: templates::Template::custom()
-//! [`Template::render()`]: templates::Template::render()
 
 #[cfg(feature = "tera_templates")] pub extern crate tera;
 #[cfg(feature = "tera_templates")] mod tera_templates;
@@ -140,8 +135,9 @@ use serde_json::{Value, to_value};
 
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::error::Error;
 
-use rocket::{Rocket, State};
+use rocket::Rocket;
 use rocket::request::Request;
 use rocket::fairing::Fairing;
 use rocket::response::{self, Content, Responder};
@@ -184,7 +180,6 @@ const DEFAULT_TEMPLATE_DIR: &str = "templates";
 /// returned from a request handler directly:
 ///
 /// ```rust
-/// # #![feature(proc_macro_hygiene)]
 /// # #[macro_use] extern crate rocket;
 /// # #[macro_use] extern crate rocket_contrib;
 /// # fn context() {  }
@@ -256,8 +251,11 @@ impl Template {
     /// Returns a fairing that initializes and maintains templating state.
     ///
     /// Unlike [`Template::fairing()`], this method allows you to configure
-    /// templating engines via the parameter `f`. Note that only the enabled
+    /// templating engines via the function `f`. Note that only the enabled
     /// templating engines will be accessible from the `Engines` type.
+    ///
+    /// This method does not allow the function `f` to fail. If `f` is fallible,
+    /// use [`Template::try_custom()`] instead.
     ///
     /// # Example
     ///
@@ -277,10 +275,42 @@ impl Template {
     ///     # ;
     /// }
     /// ```
-    pub fn custom<F>(f: F) -> impl Fairing
-        where F: Fn(&mut Engines) + Send + Sync + 'static
+    pub fn custom<F: Send + Sync + 'static>(f: F) -> impl Fairing
+        where F: Fn(&mut Engines)
     {
-        TemplateFairing { custom_callback: Box::new(f) }
+        Self::try_custom(move |engines| { f(engines); Ok(()) })
+    }
+
+    /// Returns a fairing that initializes and maintains templating state.
+    ///
+    /// This variant of [`Template::custom()`] allows a fallible `f`. If `f`
+    /// returns an error during initialization, it will cancel the launch. If
+    /// `f` returns an error during template reloading (in debug mode), then the
+    /// newly-reloaded templates are discarded.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// extern crate rocket;
+    /// extern crate rocket_contrib;
+    ///
+    /// use rocket_contrib::templates::Template;
+    ///
+    /// fn main() {
+    ///     rocket::ignite()
+    ///         // ...
+    ///         .attach(Template::try_custom(|engines| {
+    ///             // engines.handlebars.register_helper ...
+    ///             Ok(())
+    ///         }))
+    ///         // ...
+    ///     # ;
+    /// }
+    /// ```
+    pub fn try_custom<F: Send + Sync + 'static>(f: F) -> impl Fairing
+        where F: Fn(&mut Engines) -> Result<(), Box<dyn Error>>
+    {
+        TemplateFairing { callback: Box::new(f) }
     }
 
     /// Render the template named `name` with the context `context`. The
@@ -328,11 +358,11 @@ impl Template {
     /// use std::collections::HashMap;
     ///
     /// use rocket_contrib::templates::Template;
-    /// use rocket::local::Client;
+    /// use rocket::local::blocking::Client;
     ///
     /// fn main() {
     ///     let rocket = rocket::ignite().attach(Template::fairing());
-    ///     let client = Client::new(rocket).expect("valid rocket");
+    ///     let client = Client::untracked(rocket).expect("valid rocket");
     ///
     ///     // Create a `context`. Here, just an empty `HashMap`.
     ///     let mut context = HashMap::new();
@@ -387,16 +417,19 @@ impl Template {
 /// Returns a response with the Content-Type derived from the template's
 /// extension and a fixed-size body containing the rendered template. If
 /// rendering fails, an `Err` of `Status::InternalServerError` is returned.
-impl Responder<'static> for Template {
-    fn respond_to(self, req: &Request<'_>) -> response::Result<'static> {
-        let ctxt = req.guard::<State<'_, ContextManager>>().succeeded().ok_or_else(|| {
-            error_!("Uninitialized template context: missing fairing.");
-            info_!("To use templates, you must attach `Template::fairing()`.");
-            info_!("See the `Template` documentation for more information.");
-            Status::InternalServerError
-        })?.inner().context();
+impl<'r> Responder<'r, 'static> for Template {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
+        let (render, content_type) = {
+            let ctxt = req.managed_state::<ContextManager>().ok_or_else(|| {
+                error_!("Uninitialized template context: missing fairing.");
+                info_!("To use templates, you must attach `Template::fairing()`.");
+                info_!("See the `Template` documentation for more information.");
+                Status::InternalServerError
+            })?.context();
 
-        let (render, content_type) = self.finalize(&ctxt)?;
+            self.finalize(&ctxt)?
+        };
+
         Content(content_type, render).respond_to(req)
     }
 }

@@ -8,6 +8,7 @@ members = [
   "core/http/",
   "contrib/lib",
   "contrib/codegen",
+  "site/tests",
   "examples/cookies",
   "examples/errors",
   "examples/form_validation",
@@ -41,5 +42,4 @@ members = [
   "examples/tls",
   "examples/fairings",
   "examples/hello_2018",
-  "examples/hello_2015",
 ]

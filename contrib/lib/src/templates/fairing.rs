@@ -1,10 +1,13 @@
+use std::error::Error;
+
 use crate::templates::{DEFAULT_TEMPLATE_DIR, Context, Engines};
 
 use rocket::Rocket;
-use rocket::config::ConfigError;
 use rocket::fairing::{Fairing, Info, Kind};
 
 pub(crate) use self::context::ContextManager;
+
+type Callback = Box<dyn Fn(&mut Engines) -> Result<(), Box<dyn Error>>+ Send + Sync + 'static>;
 
 #[cfg(not(debug_assertions))]
 mod context {
@@ -38,7 +41,7 @@ mod context {
 
     use notify::{raw_watcher, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 
-    use crate::templates::{Context, Engines};
+    use super::{Callback, Context};
 
     /// Wraps a Context. With `cfg(debug_assertions)` active, this structure
     /// additionally provides a method to reload the context at runtime.
@@ -89,7 +92,7 @@ mod context {
         /// have been changes since the last reload, all templates are
         /// reinitialized from disk and the user's customization callback is run
         /// again.
-        pub fn reload_if_needed<F: Fn(&mut Engines)>(&self, custom_callback: F) {
+        pub fn reload_if_needed(&self, callback: &Callback) {
             self.watcher.as_ref().map(|w| {
                 let rx_lock = w.lock().expect("receive queue lock");
                 let mut changed = false;
@@ -101,11 +104,17 @@ mod context {
                     info_!("Change detected: reloading templates.");
                     let mut ctxt = self.context_mut();
                     if let Some(mut new_ctxt) = Context::initialize(ctxt.root.clone()) {
-                        custom_callback(&mut new_ctxt.engines);
-                        *ctxt = new_ctxt;
+                        match callback(&mut new_ctxt.engines) {
+                            Ok(()) => *ctxt = new_ctxt,
+                            Err(e) => {
+                                warn_!("The template customization callback returned an error:");
+                                warn_!("{}", e);
+                                warn_!("The existing templates will remain active.");
+                            }
+                        }
                     } else {
                         warn_!("An error occurred while reloading templates.");
-                        warn_!("The previous templates will remain active.");
+                        warn_!("The existing templates will remain active.");
                     };
                 }
             });
@@ -121,20 +130,17 @@ pub struct TemplateFairing {
     /// The user-provided customization callback, allowing the use of
     /// functionality specific to individual template engines. In debug mode,
     /// this callback might be run multiple times as templates are reloaded.
-    pub custom_callback: Box<dyn Fn(&mut Engines) + Send + Sync + 'static>,
+    pub callback: Callback,
 }
 
+#[rocket::async_trait]
 impl Fairing for TemplateFairing {
     fn info(&self) -> Info {
-        // The on_request part of this fairing only applies in debug
-        // mode, so only register it in debug mode.
-        Info {
-            name: "Templates",
-            #[cfg(debug_assertions)]
-            kind: Kind::Attach | Kind::Request,
-            #[cfg(not(debug_assertions))]
-            kind: Kind::Attach,
-        }
+        // on_request only applies in debug mode, so only enable it in debug.
+        #[cfg(debug_assertions)] let kind = Kind::Attach | Kind::Request;
+        #[cfg(not(debug_assertions))] let kind = Kind::Attach;
+
+        Info { kind, name: "Templates" }
     }
 
     /// Initializes the template context. Templates will be searched for in the
@@ -142,31 +148,52 @@ impl Fairing for TemplateFairing {
     /// The user's callback, if any was supplied, is called to customize the
     /// template engines. In debug mode, the `ContextManager::new` method
     /// initializes a directory watcher for auto-reloading of templates.
-    fn on_attach(&self, rocket: Rocket) -> Result<Rocket, Rocket> {
-        let mut template_root = rocket.config().root_relative(DEFAULT_TEMPLATE_DIR);
-        match rocket.config().get_str("template_dir") {
-            Ok(dir) => template_root = rocket.config().root_relative(dir),
-            Err(ConfigError::Missing(_)) => { /* ignore missing */ }
+    async fn on_attach(&self, rocket: Rocket) -> Result<Rocket, Rocket> {
+        use rocket::figment::{Source, value::magic::RelativePathBuf};
+
+        let configured_dir = rocket.figment()
+            .extract_inner::<RelativePathBuf>("template_dir")
+            .map(|path| path.relative());
+
+        let path = match configured_dir {
+            Ok(dir) => dir,
+            Err(e) if e.missing() => DEFAULT_TEMPLATE_DIR.into(),
             Err(e) => {
-                e.pretty_print();
-                warn_!("Using default templates directory '{:?}'", template_root);
+                rocket::config::pretty_print_error(e);
+                return Err(rocket);
             }
         };
 
-        match Context::initialize(template_root) {
+        let root = Source::from(&*path);
+        match Context::initialize(path) {
             Some(mut ctxt) => {
-                (self.custom_callback)(&mut ctxt.engines);
-                Ok(rocket.manage(ContextManager::new(ctxt)))
+                use rocket::{logger::PaintExt, yansi::Paint};
+                use crate::templates::Engines;
+
+                info!("{}{}", Paint::emoji("📐 "), Paint::magenta("Templating:"));
+
+                match (self.callback)(&mut ctxt.engines) {
+                    Ok(()) => {
+                        info_!("directory: {}", Paint::white(root));
+                        info_!("engines: {:?}", Paint::white(Engines::ENABLED_EXTENSIONS));
+                        Ok(rocket.manage(ContextManager::new(ctxt)))
+                    }
+                    Err(e) => {
+                        error_!("The template customization callback returned an error:");
+                        error_!("{}", e);
+                        Err(rocket)
+                    }
+                }
             }
             None => Err(rocket),
         }
     }
 
     #[cfg(debug_assertions)]
-    fn on_request(&self, req: &mut rocket::Request<'_>, _data: &rocket::Data) {
-        let cm = req.guard::<rocket::State<'_, ContextManager>>()
+    async fn on_request(&self, req: &mut rocket::Request<'_>, _data: &mut rocket::Data) {
+        let cm = req.managed_state::<ContextManager>()
             .expect("Template ContextManager registered in on_attach");
 
-        cm.reload_if_needed(&*self.custom_callback);
+        cm.reload_if_needed(&self.callback);
     }
 }

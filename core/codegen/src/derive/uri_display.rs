@@ -1,8 +1,8 @@
-use proc_macro::{Span, TokenStream};
-use devise::*;
+
+use devise::{*, ext::SpanDiagnosticExt};
 
 use crate::derive::from_form::Form;
-use crate::proc_macro2::TokenStream as TokenStream2;
+use crate::proc_macro2::TokenStream;
 
 const NO_EMPTY_FIELDS: &str = "fieldless structs or variants are not supported";
 const NO_NULLARY: &str = "nullary items are not supported";
@@ -10,36 +10,32 @@ const NO_EMPTY_ENUMS: &str = "empty enums are not supported";
 const ONLY_ONE_UNNAMED: &str = "tuple structs or variants must have exactly one field";
 const EXACTLY_ONE_FIELD: &str = "struct must have exactly one field";
 
-fn validate_fields(fields: Fields<'_>, parent_span: Span) -> Result<()> {
+fn validate_fields(ident: &syn::Ident, fields: Fields<'_>) -> Result<()> {
     if fields.count() == 0 {
-        return Err(parent_span.error(NO_EMPTY_FIELDS))
+        return Err(ident.span().error(NO_EMPTY_FIELDS))
     } else if fields.are_unnamed() && fields.count() > 1 {
-        return Err(fields.span().error(ONLY_ONE_UNNAMED));
+        return Err(fields.span.error(ONLY_ONE_UNNAMED));
     } else if fields.are_unit() {
-        return Err(parent_span.error(NO_NULLARY));
+        return Err(fields.span.error(NO_NULLARY));
     }
 
     Ok(())
 }
 
-fn validate_struct(gen: &DeriveGenerator, data: Struct<'_>) -> Result<()> {
-    validate_fields(data.fields(), gen.input.span())
-}
-
-fn validate_enum(gen: &DeriveGenerator, data: Enum<'_>) -> Result<()> {
+fn validate_enum(_: &DeriveGenerator, data: Enum<'_>) -> Result<()> {
     if data.variants().count() == 0 {
-        return Err(gen.input.span().error(NO_EMPTY_ENUMS));
+        return Err(data.brace_token.span.error(NO_EMPTY_ENUMS));
     }
 
     for variant in data.variants() {
-        validate_fields(variant.fields(), variant.span())?;
+        validate_fields(&variant.ident, variant.fields())?;
     }
 
     Ok(())
 }
 
 #[allow(non_snake_case)]
-pub fn derive_uri_display_query(input: TokenStream) -> TokenStream {
+pub fn derive_uri_display_query(input: proc_macro::TokenStream) -> TokenStream {
     let Query = quote!(::rocket::http::uri::Query);
     let UriDisplay = quote!(::rocket::http::uri::UriDisplay<#Query>);
     let Formatter = quote!(::rocket::http::uri::Formatter<#Query>);
@@ -49,7 +45,7 @@ pub fn derive_uri_display_query(input: TokenStream) -> TokenStream {
         .data_support(DataSupport::Struct | DataSupport::Enum)
         .generic_support(GenericSupport::Type | GenericSupport::Lifetime)
         .validate_enum(validate_enum)
-        .validate_struct(validate_struct)
+        .validate_struct(|gen, data| validate_fields(&gen.input.ident, data.fields()))
         .map_type_generic(move |_, ident, _| quote!(#ident : #UriDisplay))
         .function(move |_, inner| quote! {
             fn fmt(&self, f: &mut #Formatter) -> ::std::fmt::Result {
@@ -61,10 +57,11 @@ pub fn derive_uri_display_query(input: TokenStream) -> TokenStream {
             let span = field.span().into();
             let accessor = field.accessor();
             let tokens = if let Some(ref ident) = field.ident {
-                let name = Form::from_attrs("form", &field.attrs)
+                let name_source = Form::from_attrs("form", &field.attrs)
                     .map(|result| result.map(|form| form.field.name))
-                    .unwrap_or_else(|| Ok(ident.to_string()))?;
+                    .unwrap_or_else(|| Ok(ident.clone().into()))?;
 
+                let name = name_source.name();
                 quote_spanned!(span => f.write_named_value(#name, &#accessor)?;)
             } else {
                 quote_spanned!(span => f.write_value(&#accessor)?;)
@@ -72,7 +69,12 @@ pub fn derive_uri_display_query(input: TokenStream) -> TokenStream {
 
             Ok(tokens)
         })
-        .to_tokens();
+        .try_to_tokens();
+
+    let uri_display = match uri_display {
+        Ok(tokens) => tokens,
+        Err(diag) => return diag.emit_as_item_tokens()
+    };
 
     let i = input.clone();
     let gen_trait = quote!(impl #FromUriParam<#Query, Self>);
@@ -116,15 +118,15 @@ pub fn derive_uri_display_query(input: TokenStream) -> TokenStream {
         })
         .to_tokens();
 
-    let mut ts = TokenStream2::from(uri_display);
-    ts.extend(TokenStream2::from(from_self));
-    ts.extend(TokenStream2::from(from_ref));
-    ts.extend(TokenStream2::from(from_mut));
+    let mut ts = TokenStream::from(uri_display);
+    ts.extend(TokenStream::from(from_self));
+    ts.extend(TokenStream::from(from_ref));
+    ts.extend(TokenStream::from(from_mut));
     ts.into()
 }
 
 #[allow(non_snake_case)]
-pub fn derive_uri_display_path(input: TokenStream) -> TokenStream {
+pub fn derive_uri_display_path(input: proc_macro::TokenStream) -> TokenStream {
     let Path = quote!(::rocket::http::uri::Path);
     let UriDisplay = quote!(::rocket::http::uri::UriDisplay<#Path>);
     let Formatter = quote!(::rocket::http::uri::Formatter<#Path>);
@@ -136,7 +138,7 @@ pub fn derive_uri_display_path(input: TokenStream) -> TokenStream {
         .map_type_generic(move |_, ident, _| quote!(#ident : #UriDisplay))
         .validate_fields(|_, fields| match fields.count() {
             1 => Ok(()),
-            _ => Err(fields.span().error(EXACTLY_ONE_FIELD))
+            _ => Err(fields.span.error(EXACTLY_ONE_FIELD))
         })
         .function(move |_, inner| quote! {
             fn fmt(&self, f: &mut #Formatter) -> ::std::fmt::Result {
@@ -149,7 +151,12 @@ pub fn derive_uri_display_path(input: TokenStream) -> TokenStream {
             let accessor = field.accessor();
             quote_spanned!(span => f.write_value(&#accessor)?;)
         })
-        .to_tokens();
+        .try_to_tokens();
+
+    let uri_display = match uri_display {
+        Ok(tokens) => tokens,
+        Err(diag) => return diag.emit_as_item_tokens()
+    };
 
     let i = input.clone();
     let gen_trait = quote!(impl #FromUriParam<#Path, Self>);
@@ -179,8 +186,8 @@ pub fn derive_uri_display_path(input: TokenStream) -> TokenStream {
         })
         .to_tokens();
 
-    let mut ts = TokenStream2::from(uri_display);
-    ts.extend(TokenStream2::from(from_self));
-    ts.extend(TokenStream2::from(from_ref));
+    let mut ts = TokenStream::from(uri_display);
+    ts.extend(TokenStream::from(from_self));
+    ts.extend(TokenStream::from(from_ref));
     ts.into()
 }

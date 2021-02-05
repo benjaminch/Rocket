@@ -1,14 +1,15 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use crate::outcome::Outcome::*;
 use crate::request::{Request, form::{FromForm, FormItems, FormDataError}};
-use crate::data::{Outcome, Transform, Transformed, Data, FromData};
+use crate::data::{Data, Outcome, Transform, Transformed, ToByteUnit};
+use crate::data::{TransformFuture, FromTransformedData, FromDataFuture};
 use crate::http::{Status, uri::{Query, FromUriParam}};
 
 /// A data guard for parsing [`FromForm`] types strictly.
 ///
-/// This type implements the [`FromData`] trait. It provides a generic means to
-/// parse arbitrary structures from incoming form data.
+/// This type implements the [`FromTransformedData`] trait. It provides a
+/// generic means to parse arbitrary structures from incoming form data.
 ///
 /// # Strictness
 ///
@@ -25,12 +26,11 @@ use crate::http::{Status, uri::{Query, FromUriParam}};
 /// The trait can be automatically derived; see the [`FromForm`] documentation
 /// for more information on deriving or implementing the trait.
 ///
-/// Because `Form` implements `FromData`, it can be used directly as a target of
+/// Because `Form` implements `FromTransformedData`, it can be used directly as a target of
 /// the `data = "<param>"` route parameter as long as its generic type
 /// implements the `FromForm` trait:
 ///
 /// ```rust
-/// # #![feature(proc_macro_hygiene)]
 /// # #[macro_use] extern crate rocket;
 /// use rocket::request::Form;
 /// use rocket::http::RawStr;
@@ -48,8 +48,8 @@ use crate::http::{Status, uri::{Query, FromUriParam}};
 /// # fn main() {  }
 /// ```
 ///
-/// A type of `Form<T>` automatically dereferences into an `&T`, though you can
-/// also transform a `Form<T>` into a `T` by calling
+/// A type of `Form<T>` automatically dereferences into an `&T` or `&mut T`,
+/// though you can also transform a `Form<T>` into a `T` by calling
 /// [`into_inner()`](Form::into_inner()). Thanks to automatic dereferencing, you
 /// can access fields of `T` transparently through a `Form<T>`, as seen above
 /// with `user_input.value`.
@@ -66,7 +66,6 @@ use crate::http::{Status, uri::{Query, FromUriParam}};
 /// A handler that handles a form of this type can similarly by written:
 ///
 /// ```rust
-/// # #![feature(proc_macro_hygiene)]
 /// # #![allow(deprecated, unused_attributes)]
 /// # #[macro_use] extern crate rocket;
 /// # use rocket::request::Form;
@@ -119,7 +118,6 @@ impl<T> Form<T> {
     /// # Example
     ///
     /// ```rust
-    /// # #![feature(proc_macro_hygiene)]
     /// # #[macro_use] extern crate rocket;
     /// use rocket::request::Form;
     ///
@@ -133,6 +131,7 @@ impl<T> Form<T> {
     ///     form.into_inner().field
     /// }
     /// # fn main() { }
+    /// ```
     #[inline(always)]
     pub fn into_inner(self) -> T {
         self.0
@@ -144,6 +143,12 @@ impl<T> Deref for Form<T> {
 
     fn deref(&self) -> &T {
         &self.0
+    }
+}
+
+impl<T> DerefMut for Form<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
     }
 }
 
@@ -184,38 +189,43 @@ impl<'f, T: FromForm<'f>> Form<T> {
 ///
 /// All relevant warnings and errors are written to the console in Rocket
 /// logging format.
-impl<'f, T: FromForm<'f>> FromData<'f> for Form<T> {
-    type Error = FormDataError<'f, T::Error>;
+impl<'r, T: FromForm<'r> + Send + 'r> FromTransformedData<'r> for Form<T> {
+    type Error = FormDataError<'r, T::Error>;
     type Owned = String;
     type Borrowed = str;
 
     fn transform(
-        request: &Request<'_>,
+        request: &'r Request<'_>,
         data: Data
-    ) -> Transform<Outcome<Self::Owned, Self::Error>> {
-        use std::{cmp::min, io::Read};
+    ) -> TransformFuture<'r, Self::Owned, Self::Error> {
+        Box::pin(async move {
+            if !request.content_type().map_or(false, |ct| ct.is_form()) {
+                warn_!("Form data does not have form content type.");
+                return Transform::Borrowed(Forward(data));
+            }
 
-        if !request.content_type().map_or(false, |ct| ct.is_form()) {
-            warn_!("Form data does not have form content type.");
-            return Transform::Borrowed(Forward(data))
-        }
-
-        let limit = request.limits().forms;
-        let mut stream = data.open().take(limit);
-        let mut form_string = String::with_capacity(min(4096, limit) as usize);
-        if let Err(e) = stream.read_to_string(&mut form_string) {
-            return Transform::Borrowed(Failure((Status::InternalServerError, FormDataError::Io(e))))
-        }
-
-        Transform::Borrowed(Success(form_string))
+            let limit = request.limits().get("forms").unwrap_or(32.kibibytes());
+            match data.open(limit).stream_to_string().await {
+                Ok(form_string) => Transform::Borrowed(Success(form_string)),
+                Err(e) => {
+                    let err = (Status::InternalServerError, FormDataError::Io(e));
+                    Transform::Borrowed(Failure(err))
+                }
+            }
+        })
     }
 
-    fn from_data(_: &Request<'_>, o: Transformed<'f, Self>) -> Outcome<Self, Self::Error> {
-        <Form<T>>::from_data(try_outcome!(o.borrowed()), true).map(Form)
+    fn from_data(
+        _: &'r Request<'_>,
+        o: Transformed<'r, Self>
+    ) -> FromDataFuture<'r, Self, Self::Error> {
+        Box::pin(async move {
+            o.borrowed().and_then(|data| <Form<T>>::from_data(data, true).map(Form))
+        })
     }
 }
 
-impl<'f, A, T: FromUriParam<Query, A> + FromForm<'f>> FromUriParam<Query, A> for Form<T> {
+impl<'r, A, T: FromUriParam<Query, A> + FromForm<'r>> FromUriParam<Query, A> for Form<T> {
     type Target = T::Target;
 
     #[inline(always)]

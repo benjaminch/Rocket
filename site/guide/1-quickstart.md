@@ -1,10 +1,9 @@
 # Quickstart
 
-Before you can start writing a Rocket application, you'll need a **nightly**
-version of Rust installed. We recommend you use [rustup](https://rustup.rs/) to
-install or configure such a version. If you don't have Rust installed and would
-like extra guidance doing so, see the [getting started](../getting-started)
-section.
+Before you can start writing a Rocket application, you'll need to install the
+Rust toolchain. We recommend using [rustup](https://rustup.rs/). If you don't
+have Rust installed and would like extra guidance doing so, see the [getting
+started](../getting-started) section.
 
 ## Running Examples
 
@@ -15,7 +14,7 @@ For instance, the following set of commands runs the `hello_world` example:
 ```sh
 git clone https://github.com/SergioBenitez/Rocket
 cd Rocket
-git checkout v0.5.0-dev
+git checkout master
 cd examples/hello_world
 cargo run
 ```

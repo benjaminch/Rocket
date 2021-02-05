@@ -4,7 +4,7 @@
 //! takes some inspiration from [helmetjs], a similar piece of middleware for
 //! [express].
 //!
-//! [fairing]: https://rocket.rs/v0.5/guide/fairings/
+//! [fairing]: https://rocket.rs/master/guide/fairings/
 //! [helmetjs]: https://helmetjs.github.io/
 //! [express]: https://expressjs.com
 //! [`SpaceHelmet`]: helmet::SpaceHelmet
@@ -23,14 +23,15 @@
 //!
 //! # Supported Headers
 //!
-//! | HTTP Header                 | Description                            | Policy       | Default? |
-//! | --------------------------- | -------------------------------------- | ------------ | -------- |
-//! | [X-XSS-Protection]          | Prevents some reflected XSS attacks.   | [`XssFilter`]      | ✔        |
-//! | [X-Content-Type-Options]    | Prevents client sniffing of MIME type. | [`NoSniff`]  | ✔        |
-//! | [X-Frame-Options]           | Prevents [clickjacking].               | [`Frame`]    | ✔        |
-//! | [Strict-Transport-Security] | Enforces strict use of HTTPS.          | [`Hsts`]     | ?        |
-//! | [Expect-CT]                 | Enables certificate transparency.      | [`ExpectCt`] | ✗        |
-//! | [Referrer-Policy]           | Enables referrer policy.               | [`Referrer`] | ✗        |
+//! | HTTP Header                 | Description                            | Policy        | Default? |
+//! | --------------------------- | -------------------------------------- | ------------- | -------- |
+//! | [X-XSS-Protection]          | Prevents some reflected XSS attacks.   | [`XssFilter`] | ✔        |
+//! | [X-Content-Type-Options]    | Prevents client sniffing of MIME type. | [`NoSniff`]   | ✔        |
+//! | [X-Frame-Options]           | Prevents [clickjacking].               | [`Frame`]     | ✔        |
+//! | [Strict-Transport-Security] | Enforces strict use of HTTPS.          | [`Hsts`]      | ?        |
+//! | [Expect-CT]                 | Enables certificate transparency.      | [`ExpectCt`]  | ✗        |
+//! | [Referrer-Policy]           | Enables referrer policy.               | [`Referrer`]  | ✗        |
+//! | [X-DNS-Prefetch-Control]    | Controls browser DNS prefetching.      | [`Prefetch`]  | ✗        |
 //!
 //! <small>? If TLS is enabled when the application is launched, in a
 //! non-development environment (e.g., staging or production), HSTS is
@@ -43,14 +44,16 @@
 //! [Strict-Transport-Security]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
 //! [Expect-CT]:  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expect-CT
 //! [Referrer-Policy]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy
+//! [X-DNS-Prefetch-Control]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-DNS-Prefetch-Control
 //! [clickjacking]: https://en.wikipedia.org/wiki/Clickjacking
 //!
-//! [`XssFilter`]: helmet::XssFilter
-//! [`NoSniff`]: helmet::NoSniff
-//! [`Frame`]: helmet::Frame
-//! [`Hsts`]: helmet::Hsts
-//! [`ExpectCt`]: helmet::ExpectCt
-//! [`Referrer`]: helmet::Referrer
+//! [`XssFilter`]: self::XssFilter
+//! [`NoSniff`]: self::NoSniff
+//! [`Frame`]: self::Frame
+//! [`Hsts`]: self::Hsts
+//! [`ExpectCt`]: self::ExpectCt
+//! [`Referrer`]: self::Referrer
+//! [`Prefetch`]: self::Prefetch
 //!
 //! # Usage
 //!

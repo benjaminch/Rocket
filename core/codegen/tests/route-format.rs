@@ -1,8 +1,6 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 use rocket::http::{ContentType, MediaType, Accept, Status};
 
 // Test that known formats work as expected, including not colliding.
@@ -39,28 +37,28 @@ fn test_formats() {
         .mount("/", routes![json, xml, json_long, msgpack_long, msgpack,
                plain, binary, other]);
 
-    let client = Client::new(rocket).unwrap();
+    let client = Client::tracked(rocket).unwrap();
 
-    let mut response = client.post("/").header(ContentType::JSON).dispatch();
-    assert_eq!(response.body_string().unwrap(), "json");
+    let response = client.post("/").header(ContentType::JSON).dispatch();
+    assert_eq!(response.into_string().unwrap(), "json");
 
-    let mut response = client.post("/").header(ContentType::MsgPack).dispatch();
-    assert_eq!(response.body_string().unwrap(), "msgpack_long");
+    let response = client.post("/").header(ContentType::MsgPack).dispatch();
+    assert_eq!(response.into_string().unwrap(), "msgpack_long");
 
-    let mut response = client.post("/").header(ContentType::XML).dispatch();
-    assert_eq!(response.body_string().unwrap(), "xml");
+    let response = client.post("/").header(ContentType::XML).dispatch();
+    assert_eq!(response.into_string().unwrap(), "xml");
 
-    let mut response = client.get("/").header(Accept::Plain).dispatch();
-    assert_eq!(response.body_string().unwrap(), "plain");
+    let response = client.get("/").header(Accept::Plain).dispatch();
+    assert_eq!(response.into_string().unwrap(), "plain");
 
-    let mut response = client.get("/").header(Accept::Binary).dispatch();
-    assert_eq!(response.body_string().unwrap(), "binary");
+    let response = client.get("/").header(Accept::Binary).dispatch();
+    assert_eq!(response.into_string().unwrap(), "binary");
 
-    let mut response = client.get("/").header(ContentType::JSON).dispatch();
-    assert_eq!(response.body_string().unwrap(), "plain");
+    let response = client.get("/").header(ContentType::JSON).dispatch();
+    assert_eq!(response.into_string().unwrap(), "plain");
 
-    let mut response = client.get("/").dispatch();
-    assert_eq!(response.body_string().unwrap(), "plain");
+    let response = client.get("/").dispatch();
+    assert_eq!(response.into_string().unwrap(), "plain");
 
     let response = client.put("/").header(ContentType::HTML).dispatch();
     assert_eq!(response.status(), Status::NotFound);
@@ -85,27 +83,27 @@ fn test_custom_formats() {
     let rocket = rocket::ignite()
         .mount("/", routes![get_foo, post_foo, get_bar_baz, put_bar_baz]);
 
-    let client = Client::new(rocket).unwrap();
+    let client = Client::tracked(rocket).unwrap();
 
     let foo_a = Accept::new(&[MediaType::new("application", "foo").into()]);
     let foo_ct = ContentType::new("application", "foo");
     let bar_baz_ct = ContentType::new("bar", "baz");
     let bar_baz_a = Accept::new(&[MediaType::new("bar", "baz").into()]);
 
-    let mut response = client.get("/").header(foo_a).dispatch();
-    assert_eq!(response.body_string().unwrap(), "get_foo");
+    let response = client.get("/").header(foo_a).dispatch();
+    assert_eq!(response.into_string().unwrap(), "get_foo");
 
-    let mut response = client.post("/").header(foo_ct).dispatch();
-    assert_eq!(response.body_string().unwrap(), "post_foo");
+    let response = client.post("/").header(foo_ct).dispatch();
+    assert_eq!(response.into_string().unwrap(), "post_foo");
 
-    let mut response = client.get("/").header(bar_baz_a).dispatch();
-    assert_eq!(response.body_string().unwrap(), "get_bar_baz");
+    let response = client.get("/").header(bar_baz_a).dispatch();
+    assert_eq!(response.into_string().unwrap(), "get_bar_baz");
 
-    let mut response = client.put("/").header(bar_baz_ct).dispatch();
-    assert_eq!(response.body_string().unwrap(), "put_bar_baz");
+    let response = client.put("/").header(bar_baz_ct).dispatch();
+    assert_eq!(response.into_string().unwrap(), "put_bar_baz");
 
-    let mut response = client.get("/").dispatch();
-    assert_eq!(response.body_string().unwrap(), "get_foo");
+    let response = client.get("/").dispatch();
+    assert_eq!(response.into_string().unwrap(), "get_foo");
 
     let response = client.put("/").header(ContentType::HTML).dispatch();
     assert_eq!(response.status(), Status::NotFound);

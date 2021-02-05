@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rocket::http::uncased::UncasedStr;
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::{Request, Response, Rocket};
+use rocket::{Rocket, Request, Response};
 
 use crate::helmet::*;
 
@@ -188,6 +188,7 @@ impl SpaceHelmet {
     }
 }
 
+#[rocket::async_trait]
 impl Fairing for SpaceHelmet {
     fn info(&self) -> Info {
         Info {
@@ -196,13 +197,13 @@ impl Fairing for SpaceHelmet {
         }
     }
 
-    fn on_response(&self, _request: &Request<'_>, response: &mut Response<'_>) {
-        self.apply(response);
+    async fn on_response<'r>(&self, _: &'r Request<'_>, res: &mut Response<'r>) {
+        self.apply(res);
     }
 
     fn on_launch(&self, rocket: &Rocket) {
         if rocket.config().tls_enabled()
-            && !rocket.config().environment.is_dev()
+            && rocket.figment().profile() != rocket::Config::DEBUG_PROFILE
             && !self.is_enabled::<Hsts>()
         {
             warn_!("Space Helmet: deploying with TLS without enabling HSTS.");

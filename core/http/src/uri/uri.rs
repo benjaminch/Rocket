@@ -5,7 +5,7 @@ use std::str::Utf8Error;
 use std::convert::TryFrom;
 
 use crate::ext::IntoOwned;
-use crate::parse::Indexed;
+use crate::parse::Extent;
 use crate::uri::{Origin, Authority, Absolute, Error};
 use crate::uri::encoding::{percent_encode, DEFAULT_ENCODE_SET};
 
@@ -28,10 +28,21 @@ use crate::uri::encoding::{percent_encode, DEFAULT_ENCODE_SET};
 /// ## Parsing
 ///
 /// The `Uri` type implements a full, zero-allocation, zero-copy [RFC 7230]
-/// compliant parser. To parse an `&str` into a `Uri`, use the [`Uri::parse()`]
-/// method. Alternatively, you may also use the `TryFrom<&str>` and
-/// `TryFrom<String>` trait implementation. To inspect the parsed type, match on
-/// the resulting `enum` and use the methods of the internal structure.
+/// compliant "request target" parser with limited liberties for real-world
+/// deviations. In particular, the parser deviates as follows:
+///
+///   * It accepts `%` characters without two trailing hex-digits unless it is
+///     the only character in the URI.
+///
+///   * It accepts the following additional unencoded characters in query parts,
+///     to match real-world browser behavior:
+///
+///     `{`, `}`, `[`,  `]`, `\`,  `^`,  <code>&#96;</code>, `|`
+///
+/// To parse an `&str` into a `Uri`, use [`Uri::parse()`]. Alternatively, you
+/// may also use the `TryFrom<&str>` and `TryFrom<String>` trait implementation.
+/// To inspect the parsed type, match on the resulting `enum` and use the
+/// methods of the internal structure.
 ///
 /// [RFC 7230]: https://tools.ietf.org/html/rfc7230
 ///
@@ -64,9 +75,9 @@ impl<'a> Uri<'a> {
     #[inline]
     pub(crate) unsafe fn raw_absolute(
         source: Cow<'a, [u8]>,
-        scheme: Indexed<'a, [u8]>,
-        path: Indexed<'a, [u8]>,
-        query: Option<Indexed<'a, [u8]>>,
+        scheme: Extent<&'a [u8]>,
+        path: Extent<&'a [u8]>,
+        query: Option<Extent<&'a [u8]>>,
     ) -> Uri<'a> {
         let origin = Origin::raw(source.clone(), path, query);
         Uri::Absolute(Absolute::raw(source.clone(), scheme, None, Some(origin)))
@@ -93,6 +104,20 @@ impl<'a> Uri<'a> {
     pub fn parse(string: &'a str) -> Result<Uri<'a>, Error<'_>> {
         crate::parse::uri::from_str(string)
     }
+
+//    pub fn from_hyp(uri: &'a hyper::Uri) -> Uri<'a> {
+//        match uri.is_absolute() {
+//            true => Uri::Absolute(Absolute::new(
+//                uri.scheme().unwrap(),
+//                match uri.host() {
+//                    Some(host) => Some(Authority::new(None, Host::Raw(host), uri.port())),
+//                    None => None
+//                },
+//                None
+//            )),
+//            false => Uri::Asterisk
+//        }
+//    }
 
     /// Returns the internal instance of `Origin` if `self` is a `Uri::Origin`.
     /// Otherwise, returns `None`.

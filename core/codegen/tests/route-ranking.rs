@@ -1,8 +1,6 @@
-#![feature(proc_macro_hygiene)]
-
 #[macro_use] extern crate rocket;
 
-use rocket::local::Client;
+use rocket::local::blocking::Client;
 
 // Test that manual/auto ranking works as expected.
 
@@ -21,19 +19,19 @@ fn get3(_number: u64) -> &'static str { "3" }
 #[test]
 fn test_ranking() {
     let rocket = rocket::ignite().mount("/", routes![get0, get1, get2, get3]);
-    let client = Client::new(rocket).unwrap();
+    let client = Client::tracked(rocket).unwrap();
 
-    let mut response = client.get("/0").dispatch();
-    assert_eq!(response.body_string().unwrap(), "0");
+    let response = client.get("/0").dispatch();
+    assert_eq!(response.into_string().unwrap(), "0");
 
-    let mut response = client.get(format!("/{}", 1 << 8)).dispatch();
-    assert_eq!(response.body_string().unwrap(), "1");
+    let response = client.get(format!("/{}", 1 << 8)).dispatch();
+    assert_eq!(response.into_string().unwrap(), "1");
 
-    let mut response = client.get(format!("/{}", 1 << 16)).dispatch();
-    assert_eq!(response.body_string().unwrap(), "2");
+    let response = client.get(format!("/{}", 1 << 16)).dispatch();
+    assert_eq!(response.into_string().unwrap(), "2");
 
-    let mut response = client.get(format!("/{}", 1u64 << 32)).dispatch();
-    assert_eq!(response.body_string().unwrap(), "3");
+    let response = client.get(format!("/{}", 1u64 << 32)).dispatch();
+    assert_eq!(response.into_string().unwrap(), "3");
 }
 
 // Test a collision due to same auto rank.
@@ -43,12 +41,12 @@ fn get0b(_n: u8) {  }
 
 #[test]
 fn test_rank_collision() {
-    use rocket::error::LaunchErrorKind;
+    use rocket::error::ErrorKind;
 
     let rocket = rocket::ignite().mount("/", routes![get0, get0b]);
-    let client_result = Client::new(rocket);
+    let client_result = Client::tracked(rocket);
     match client_result.as_ref().map_err(|e| e.kind()) {
-        Err(LaunchErrorKind::Collision(..)) => { /* o.k. */ },
+        Err(ErrorKind::Collision(..)) => { /* o.k. */ },
         Ok(_) => panic!("client succeeded unexpectedly"),
         Err(e) => panic!("expected collision, got {}", e)
     }

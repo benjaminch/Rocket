@@ -1,6 +1,6 @@
-#![doc(html_root_url = "https://api.rocket.rs/v0.5")]
-#![doc(html_favicon_url = "https://rocket.rs/v0.5/images/favicon.ico")]
-#![doc(html_logo_url = "https://rocket.rs/v0.5/images/logo-boxed.png")]
+#![doc(html_root_url = "https://api.rocket.rs/master")]
+#![doc(html_favicon_url = "https://rocket.rs/images/favicon.ico")]
+#![doc(html_logo_url = "https://rocket.rs/images/logo-boxed.png")]
 
 #![warn(rust_2018_idioms)]
 #![allow(unused_extern_crates)]
@@ -24,9 +24,8 @@
 //! * [uuid](uuid) - UUID (de)serialization
 //! * [${database}_pool](databases) - Database Configuration and Pooling
 //! * [helmet](helmet) - Fairing for Security and Privacy Headers
-//! * [compression](compression) - Response compression
 //!
-//! The recommend way to include features from this crate via Cargo in your
+//! The recommend way to include features from this crate via Rocket in your
 //! project is by adding a `[dependencies.rocket_contrib]` section to your
 //! `Cargo.toml` file, setting `default-features` to false, and specifying
 //! features manually. For example, to use the JSON module, you would add:
@@ -51,6 +50,7 @@
 #[cfg(feature="uuid")] pub mod uuid;
 #[cfg(feature="databases")] pub mod databases;
 #[cfg(feature = "helmet")] pub mod helmet;
-#[cfg(any(feature="brotli_compression", feature="gzip_compression"))] pub mod compression;
+// TODO.async: Migrate compression, reenable this, tests, and add to docs.
+//#[cfg(any(feature="brotli_compression", feature="gzip_compression"))] pub mod compression;
 
 #[cfg(feature="databases")] #[doc(hidden)] pub use rocket_contrib_codegen::*;

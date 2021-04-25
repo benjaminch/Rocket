@@ -42,7 +42,7 @@ struct HitCount {
     count: AtomicUsize
 }
 
-rocket::ignite().manage(HitCount { count: AtomicUsize::new(0) });
+rocket::build().manage(HitCount { count: AtomicUsize::new(0) });
 ```
 
 The `manage` method can be called any number of times as long as each call
@@ -55,7 +55,7 @@ a `HitCount` value and a `Config` value, we can write:
 # type Config = &'static str;
 # let user_input = "input";
 
-rocket::ignite()
+rocket::build()
     .manage(HitCount { count: AtomicUsize::new(0) })
     .manage(Config::from(user_input));
 ```
@@ -128,10 +128,10 @@ use rocket::request::{self, Request, FromRequest};
 # struct HitCount { count: AtomicUsize }
 # type ErrorType = ();
 #[rocket::async_trait]
-impl<'a, 'r> FromRequest<'a, 'r> for T {
+impl<'r> FromRequest<'r> for T {
     type Error = ErrorType;
 
-    async fn from_request(req: &'a Request<'r>) -> request::Outcome<T, Self::Error> {
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<T, Self::Error> {
         let hit_count_state = try_outcome!(req.guard::<State<HitCount>>().await);
         let current_count = hit_count_state.count.load(Ordering::Relaxed);
         /* ... */
@@ -173,10 +173,10 @@ struct RequestId(pub usize);
 
 /// Returns the current request's ID, assigning one only as necessary.
 #[rocket::async_trait]
-impl<'a, 'r> FromRequest<'a, 'r> for &'a RequestId {
+impl<'r> FromRequest<'r> for &'r RequestId {
     type Error = ();
 
-    async fn from_request(request: &'a Request<'r>) -> request::Outcome<Self, Self::Error> {
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         // The closure passed to `local_cache` will be executed at most once per
         // request: the first time the `RequestId` guard is used. If it is
         // requested again, `local_cache` will return the same value.
@@ -229,25 +229,22 @@ Presently, Rocket provides built-in support for the following databases:
 | Kind     | Driver                | Version   | `Poolable` Type                | Feature                |
 |----------|-----------------------|-----------|--------------------------------|------------------------|
 | MySQL    | [Diesel]              | `1`       | [`diesel::MysqlConnection`]    | `diesel_mysql_pool`    |
-| MySQL    | [`rust-mysql-simple`] | `18`      | [`mysql::Conn`]                | `mysql_pool`           |
 | Postgres | [Diesel]              | `1`       | [`diesel::PgConnection`]       | `diesel_postgres_pool` |
-| Postgres | [Rust-Postgres]       | `0.17`    | [`postgres::Client`]           | `postgres_pool`        |
+| Postgres | [Rust-Postgres]       | `0.19`    | [`postgres::Client`]           | `postgres_pool`        |
 | Sqlite   | [Diesel]              | `1`       | [`diesel::SqliteConnection`]   | `diesel_sqlite_pool`   |
-| Sqlite   | [`Rusqlite`]          | `0.23`    | [`rusqlite::Connection`]       | `sqlite_pool`          |
+| Sqlite   | [`Rusqlite`]          | `0.24`    | [`rusqlite::Connection`]       | `sqlite_pool`          |
 | Memcache | [`memcache`]          | `0.15`    | [`memcache::Client`]           | `memcache_pool`        |
 
 [`r2d2`]: https://crates.io/crates/r2d2
 [Diesel]: https://diesel.rs
 [`rusqlite::Connection`]: https://docs.rs/rusqlite/0.23.0/rusqlite/struct.Connection.html
-[`diesel::SqliteConnection`]: http://docs.diesel.rs/diesel/prelude/struct.SqliteConnection.html
-[`postgres::Client`]: https://docs.rs/postgres/0.17/postgres/struct.Client.html
-[`diesel::PgConnection`]: http://docs.diesel.rs/diesel/pg/struct.PgConnection.html
-[`mysql::Conn`]: https://docs.rs/mysql/18/mysql/struct.Conn.html
-[`diesel::MysqlConnection`]: http://docs.diesel.rs/diesel/mysql/struct.MysqlConnection.html
+[`diesel::SqliteConnection`]: https://docs.diesel.rs/diesel/prelude/struct.SqliteConnection.html
+[`postgres::Client`]: https://docs.rs/postgres/0.19/postgres/struct.Client.html
+[`diesel::PgConnection`]: https://docs.diesel.rs/diesel/pg/struct.PgConnection.html
+[`diesel::MysqlConnection`]: https://docs.diesel.rs/diesel/mysql/struct.MysqlConnection.html
 [`Rusqlite`]: https://github.com/jgallagher/rusqlite
 [Rust-Postgres]: https://github.com/sfackler/rust-postgres
-[`rust-mysql-simple`]: https://github.com/blackbeam/rust-mysql-simple
-[`diesel::PgConnection`]: http://docs.diesel.rs/diesel/pg/struct.PgConnection.html
+[`diesel::PgConnection`]: https://docs.diesel.rs/diesel/pg/struct.PgConnection.html
 [`memcache`]: https://github.com/aisk/rust-memcache
 [`memcache::Client`]: https://docs.rs/memcache/0.15/memcache/struct.Client.html
 
@@ -294,8 +291,8 @@ use rocket_contrib::databases::diesel;
 struct LogsDbConn(diesel::SqliteConnection);
 
 #[launch]
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().attach(LogsDbConn::fairing())
+fn rocket() -> _ {
+    rocket::build().attach(LogsDbConn::fairing())
 }
 ```
 
@@ -328,7 +325,9 @@ async fn get_logs(conn: LogsDbConn, id: usize) -> Logs {
   syntax. Rocket does not provide an ORM. It is up to you to decide how to model
   your application's data.
 
-! note
+<!---->
+
+! note: Rocket wraps synchronous databases in an `async` API.
 
   The database engines supported by `#[database]` are *synchronous*. Normally,
   using such a database would block the thread of execution. To prevent this,
@@ -347,6 +346,10 @@ postgres = { version = "0.15", features = ["with-chrono"] }
 ```
 
 For more on Rocket's built-in database support, see the
-[`rocket_contrib::databases`] module documentation.
+[`rocket_contrib::databases`] module documentation. For examples of CRUD-like
+"blog" JSON APIs backed by a SQLite database driven by each of `sqlx`, `diesel`,
+and `rusqlite` with migrations run automatically for the former two drivers and
+`contrib` database support use for the latter two drivers, see the [databases
+example](@example/databases).
 
 [`rocket_contrib::databases`]: @api/rocket_contrib/databases/index.html

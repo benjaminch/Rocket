@@ -23,19 +23,19 @@ fn specified_html() -> &'static str {
 mod tests {
     use super::*;
 
-    use rocket::Rocket;
+    use rocket::{Rocket, Build};
     use rocket::local::blocking::Client;
     use rocket::http::{Status, ContentType};
 
-    fn rocket() -> Rocket {
-        rocket::ignite()
+    fn rocket() -> Rocket<Build> {
+        rocket::build()
             .mount("/first", routes![specified, unspecified])
             .mount("/second", routes![specified_json, specified_html])
     }
 
     macro_rules! check_dispatch {
         ($mount:expr, $ct:expr, $body:expr) => (
-            let client = Client::tracked(rocket()).unwrap();
+            let client = Client::debug(rocket()).unwrap();
             let mut req = client.post($mount);
             let ct: Option<ContentType> = $ct;
             if let Some(ct) = ct {

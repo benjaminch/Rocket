@@ -23,15 +23,11 @@ fn test_ignored_segments() {
         client.get(url).dispatch().into_string().unwrap()
     }
 
-    let rocket = rocket::ignite().mount("/", routes![
+    let rocket = rocket::build().mount("/", routes![
         ig_1, just_static, ig_2, ig_3, ig_1_static, ig_1_static_static, wrapped
     ]);
 
-    let client = match Client::untracked(rocket) {
-        Ok(client) => client,
-        Err(e) => { drop(e); panic!("whoops") },
-    };
-
+    let client = Client::debug(rocket).unwrap();
     assert_eq!(get_string(&client, "/foo"), "1");
     assert_eq!(get_string(&client, "/bar"), "1");
     assert_eq!(get_string(&client, "/static"), "static");

@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rocket::State;
+use rocket::{Rocket, State, Build};
 use rocket::fairing::AdHoc;
 use rocket::http::Method;
 
@@ -19,10 +19,10 @@ fn index(counter: State<'_, Counter>) -> String {
     format!("{}, {}", attaches, gets)
 }
 
-fn rocket() -> rocket::Rocket {
-    rocket::ignite()
+fn rocket() -> Rocket<Build> {
+    rocket::build()
         .mount("/", routes![index])
-        .attach(AdHoc::on_attach("Outer", |rocket| async {
+        .attach(AdHoc::on_ignite("Outer", |rocket| async {
             let counter = Counter::default();
             counter.attach.fetch_add(1, Ordering::Relaxed);
             let rocket = rocket.manage(counter)
@@ -36,7 +36,7 @@ fn rocket() -> rocket::Rocket {
                     })
                 }));
 
-            Ok(rocket)
+            rocket
         }))
 }
 
@@ -46,7 +46,7 @@ mod nested_fairing_attaches_tests {
 
     #[test]
     fn test_counts() {
-        let client = Client::tracked(rocket()).unwrap();
+        let client = Client::debug(rocket()).unwrap();
         let response = client.get("/").dispatch();
         assert_eq!(response.into_string(), Some("1, 1".into()));
 

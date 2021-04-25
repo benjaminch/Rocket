@@ -29,13 +29,16 @@ mod rusqlite_integration_test {
         use rocket::figment::{Figment, util::map};
 
         let options = map!["url" => ":memory:"];
-        let config = Figment::from(rocket::Config::default())
+        let config = Figment::from(rocket::Config::debug_default())
             .merge(("databases", map!["test_db" => &options]))
             .merge(("databases", map!["test_db_2" => &options]));
 
         let rocket = rocket::custom(config)
             .attach(SqliteDb::fairing())
-            .attach(SqliteDb2::fairing());
+            .attach(SqliteDb2::fairing())
+            .ignite()
+            .await
+            .unwrap();
 
         let conn = SqliteDb::get_one(&rocket).await
             .expect("unable to get connection");
@@ -53,9 +56,10 @@ mod rusqlite_integration_test {
     }
 }
 
-#[cfg(feature = "databases")]
 #[cfg(test)]
-mod drop_runtime_test {
+#[cfg(feature = "databases")]
+mod sentinel_and_runtime_test {
+    use rocket::{Rocket, Build};
     use r2d2::{ManageConnection, Pool};
     use rocket_contrib::databases::{database, Poolable, PoolResult};
     use tokio::runtime::Runtime;
@@ -84,7 +88,7 @@ mod drop_runtime_test {
         type Manager = ContainsRuntime;
         type Error = ();
 
-        fn pool(_db_name: &str, _rocket: &rocket::Rocket) -> PoolResult<Self> {
+        fn pool(_db_name: &str, _rocket: &Rocket<Build>) -> PoolResult<Self> {
             let manager = ContainsRuntime(tokio::runtime::Runtime::new().unwrap());
             Ok(Pool::builder().build(manager)?)
         }
@@ -97,10 +101,21 @@ mod drop_runtime_test {
     async fn test_drop_runtime() {
         use rocket::figment::{Figment, util::map};
 
-        let config = Figment::from(rocket::Config::default())
+        let config = Figment::from(rocket::Config::debug_default())
             .merge(("databases", map!["test_db" => map!["url" => ""]]));
 
         let rocket = rocket::custom(config).attach(TestDb::fairing());
         drop(rocket);
+    }
+
+    #[test]
+    fn test_sentinel() {
+        use rocket::{*, local::blocking::Client, error::ErrorKind::SentinelAborts};
+
+        #[get("/")]
+        fn use_db(_db: TestDb) {}
+
+        let err = Client::debug_with(routes![use_db]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 1));
     }
 }

@@ -12,7 +12,7 @@ fn struct_maker_vec(
     input: proc_macro::TokenStream,
     ty: TokenStream,
 ) -> Result<TokenStream> {
-    define_vars_and_mods!(_Vec);
+    use crate::exports::_Vec;
 
     // Parse a comma-separated list of paths.
     let paths = <Punctuated<Path, Token![,]>>::parse_terminated.parse(input)?;
@@ -41,7 +41,9 @@ pub fn catchers_macro(input: proc_macro::TokenStream) -> TokenStream {
 
 pub fn uri_macro(input: proc_macro::TokenStream) -> TokenStream {
     uri::_uri_macro(input.into())
-        .unwrap_or_else(|diag| diag.emit_as_expr_tokens())
+        .unwrap_or_else(|diag| diag.emit_as_expr_tokens_or(quote! {
+            rocket::http::uri::Origin::dummy()
+        }))
 }
 
 pub fn uri_internal_macro(input: proc_macro::TokenStream) -> TokenStream {
@@ -50,13 +52,10 @@ pub fn uri_internal_macro(input: proc_macro::TokenStream) -> TokenStream {
     // invocation of `uri!` without access to `span.parent()`, and
     // `Span::call_site()` here points to the `#[route]`, immediate caller,
     // generate a rather confusing error message when there's a type-mismatch.
-    // uri::_uri_internal_macro(input.into())
-    //     .unwrap_or_else(|diag| diag.emit_as_expr_tokens_or(quote_spanned! { span =>
-    //         rocket::http::uri::Origin::dummy()
-    //     }))
-
     uri::_uri_internal_macro(input.into())
-        .unwrap_or_else(|diag| diag.emit_as_expr_tokens())
+        .unwrap_or_else(|diag| diag.emit_as_expr_tokens_or(quote! {
+            rocket::http::uri::Origin::dummy()
+        }))
 }
 
 pub fn guide_tests_internal(input: proc_macro::TokenStream) -> TokenStream {

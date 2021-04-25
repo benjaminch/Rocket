@@ -21,7 +21,7 @@ values:
 |----------------|-----------------|-------------------------------------------------|-----------------------|
 | `address`      | `IpAddr`        | IP address to serve on                          | `127.0.0.1`           |
 | `port`         | `u16`           | Port to serve on.                               | `8000`                |
-| `workers`      | `usize`         | Number of threads to use for executing futures. | cpu core count |
+| `workers`      | `usize`         | Number of threads to use for executing futures. | cpu core count        |
 | `keep_alive`   | `u32`           | Keep-alive timeout seconds; disabled when `0`.  | `5`                   |
 | `log_level`    | `LogLevel`      | Max level to log. (off/normal/debug/critical)   | `normal`/`critical`   |
 | `cli_colors`   | `bool`          | Whether to use colors and emoji when logging.   | `true`                |
@@ -53,7 +53,7 @@ selected profile doesn't contain a requested values, while values in the
 [`Provider`]: @figment/trait.Provider.html
 [`Profile`]: @figment/struct.Profile.html
 [`Config`]: @api/rocket/struct.Config.html
-[`Config::figment()`]: @api/struct.Config.html#method.figment
+[`Config::figment()`]: @api/rocket/struct.Config.html#method.figment
 [`Toml`]: @figment/providers/struct.Toml.html
 [`Json`]: @figment/providers/struct.Json.html
 [`Figment`]: @api/rocket/struct.Figment.html
@@ -124,7 +124,7 @@ values are ignored.
 ## Default Provider
 
 Rocket's default configuration provider is [`Config::figment()`]; this is the
-provider that's used when calling [`rocket::ignite()`].
+provider that's used when calling [`rocket::build()`].
 
 The default figment merges, at a per-key level, and reads from the following
 sources, in ascending priority order:
@@ -212,7 +212,7 @@ use serde::Deserialize;
 
 #[launch]
 fn rocket() -> _ {
-    let rocket = rocket::ignite();
+    let rocket = rocket::build();
     let figment = rocket.figment();
 
     #[derive(Deserialize)]
@@ -259,7 +259,7 @@ fn custom(config: State<'_, Config>) -> String {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::ignite()
+    rocket::build()
         .mount("/", routes![custom])
         .attach(AdHoc::config::<Config>())
 }
@@ -270,7 +270,7 @@ fn rocket() -> _ {
 ## Custom Providers
 
 A custom provider can be set via [`rocket::custom()`], which replaces calls to
-[`rocket::ignite()`]. The configured provider can be built on top of
+[`rocket::build()`]. The configured provider can be built on top of
 [`Config::figment()`], [`Config::default()`], both, or neither. The
 [Figment](@figment) documentation has full details on instantiating existing
 providers like [`Toml`] and [`Json`] as well as creating custom providers for
@@ -314,14 +314,14 @@ fn rocket() -> _ {
 More involved, consider an application that wants to use Rocket's defaults for
 [`Config`], but not its configuration sources, while allowing the application to
 be configured via an `App.toml` file that uses top-level keys as profiles
-(`.nested()`) and `APP_` environment variables as global overrides
-(`.global()`):
+(`.nested()`), `APP_` environment variables as global overrides (`.global()`),
+and `APP_PROFILE` to configure the selected profile:
 
 ```rust
 # #[macro_use] extern crate rocket;
 
 use serde::{Serialize, Deserialize};
-use figment::{Figment, providers::{Format, Toml, Serialized, Env}};
+use figment::{Figment, Profile, providers::{Format, Toml, Serialized, Env}};
 use rocket::fairing::AdHoc;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -341,7 +341,8 @@ fn rocket() -> _ {
     let figment = Figment::from(rocket::Config::default())
         .merge(Serialized::defaults(Config::default()))
         .merge(Toml::file("App.toml").nested())
-        .merge(Env::prefixed("APP_").global());
+        .merge(Env::prefixed("APP_").global())
+        .select(Profile::from_env_or("APP_PROFILE", "default"));
 
     rocket::custom(figment)
         .mount("/", routes![/* .. */])
@@ -355,4 +356,4 @@ or `APP_` environment variables, Rocket will make use of them. The application
 can also extract its configuration, done here via the `Adhoc::config()` fairing.
 
 [`rocket::custom()`]: @api/rocket/fn.custom.html
-[`rocket::ignite()`]: @api/rocket/fn.custom.html
+[`rocket::build()`]: @api/rocket/fn.custom.html

@@ -1,8 +1,7 @@
 #![recursion_limit="512"]
 
-#![cfg_attr(nightly, feature(doc_cfg))]
-
 #![warn(rust_2018_idioms)]
+#![warn(missing_docs)]
 
 //! Types that map to concepts in HTTP.
 //!
@@ -12,30 +11,20 @@
 //!
 //! [#17]: https://github.com/SergioBenitez/Rocket/issues/17
 
-#[macro_use] extern crate pear;
+#[macro_use]
+extern crate pear;
 
 pub mod hyper;
 pub mod uri;
 pub mod ext;
 
-#[doc(hidden)]
-#[cfg(feature = "tls")]
-pub mod tls;
-
-#[doc(hidden)]
-pub mod route;
-
 #[macro_use]
 mod docify;
+
 #[macro_use]
-mod known_media_types;
-mod cookies;
-mod method;
-mod media_type;
-mod content_type;
-mod status;
 mod header;
-mod accept;
+mod method;
+mod status;
 mod raw_str;
 mod parse;
 mod listener;
@@ -49,25 +38,20 @@ pub mod uncased {
     #[doc(inline)] pub use uncased::*;
 }
 
-// Types that we expose for use by core.
+// Types that we expose for use _only_ by core. Please don't use this.
 #[doc(hidden)]
+#[path = "."]
 pub mod private {
+    #[cfg(feature = "tls")]
+    pub mod tls;
+
     pub use crate::parse::Indexed;
     pub use smallvec::{SmallVec, Array};
-
-    pub mod cookie {
-        pub use cookie::*;
-        pub use crate::cookies::Key;
-    }
-
     pub use crate::listener::{Incoming, Listener, Connection, bind_tcp};
+    pub use cookie;
 }
 
 pub use crate::method::Method;
-pub use crate::content_type::ContentType;
-pub use crate::accept::{Accept, QMediaType};
 pub use crate::status::{Status, StatusClass};
-pub use crate::header::{Header, HeaderMap};
-pub use crate::raw_str::RawStr;
-pub use crate::media_type::MediaType;
-pub use crate::cookies::{Cookie, CookieJar, SameSite};
+pub use crate::raw_str::{RawStr, RawStrBuf};
+pub use crate::header::*;

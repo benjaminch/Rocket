@@ -10,7 +10,7 @@ Rocket makes use of the latest Rust features. Because of this, we'll need a
 recent release of Rust to run Rocket applications. If you already have a working
 installation of the latest Rust compiler, feel free to skip to the next section.
 
-To install the latst version of Rust, we recommend using `rustup`. Install
+To install the latest version of Rust, we recommend using `rustup`. Install
 `rustup` by following the instructions on [its website](https://rustup.rs/).
 Once `rustup` is installed, ensure the latest toolchain is installled by running
 the command:
@@ -46,6 +46,19 @@ Now, add Rocket as a dependency in your `Cargo.toml`:
 rocket = "0.5.0-dev"
 ```
 
+! warning: Development versions must be _git_ dependencies.
+
+  Development versions, tagged with `-dev`, are not published. To depend on a
+  development version of Rocket, you'll need to point `Cargo.toml` to a Rocket
+  git repository. For example, with `######` replaced with a git commit hash:
+
+  `
+  [dependencies]
+  `
+  `
+  rocket = { git = "https://github.com/SergioBenitez/Rocket", rev = "######" }
+  `
+
 Modify `src/main.rs` so that it contains the code for the Rocket `Hello, world!`
 program, reproduced below:
 
@@ -58,8 +71,8 @@ fn index() -> &'static str {
 }
 
 #[launch]
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/", routes![index])
+fn rocket() -> _ {
+    rocket::build().mount("/", routes![index])
 }
 ```
 
@@ -71,17 +84,17 @@ run`. You should see the following:
 ```sh
 > cargo run
 🔧 Configured for debug.
-    => address: 127.0.0.1
-    => port: 8000
-    => workers: 64
-    => log level: normal
-    => secret key: [zero]
-    => limits: forms = 32KiB
-    => cli colors: true
-    => keep-alive: 5s
-    => tls: disabled
-🛰  Mounting /:
-    => GET / (index)
+   >> address: 127.0.0.1
+   >> port: 8000
+   >> workers: [..]
+   >> keep-alive: 5s
+   >> limits: [..]
+   >> tls: disabled
+   >> temp dir: /tmp
+   >> log level: normal
+   >> cli colors: true
+🛰  Routes:
+   >> (index) GET /
 🚀 Rocket has launched from http://127.0.0.1:8000
 ```
 

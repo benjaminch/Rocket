@@ -237,15 +237,15 @@ async fn files(file: PathBuf) -> Option<NamedFile> {
 
 ### `Result`
 
-`Result` is a special kind of wrapping responder: its functionality depends on
-whether the error type `E` implements `Responder`.
+`Result` is another _wrapping_ responder: a `Result<T, E>` can only be returned
+when `T` implements `Responder` and `E` implements `Responder`.
 
-When the error type `E` implements `Responder`, the wrapped `Responder` in `Ok`
-or `Err`, whichever it might be, is used to respond to the client. This means
-that the responder can be chosen dynamically at run-time, and two different
-kinds of responses can be used depending on the circumstances. Revisiting our
-file server, for instance, we might wish to provide more feedback to the user
-when a file isn't found. We might do this as follows:
+The wrapped `Responder` in `Ok` or `Err`, whichever it might be, is used to
+respond to the client. This means that the responder can be chosen dynamically
+at run-time, and two different kinds of responses can be used depending on the
+circumstances. Revisiting our file server, for instance, we might wish to
+provide more feedback to the user when a file isn't found. We might do this as
+follows:
 
 ```rust
 # #[macro_use] extern crate rocket;
@@ -261,10 +261,6 @@ async fn files(file: PathBuf) -> Result<NamedFile, NotFound<String>> {
     NamedFile::open(&path).await.map_err(|e| NotFound(e.to_string()))
 }
 ```
-
-If the error type `E` _does not_ implement `Responder`, then the error is simply
-logged to the console, using its `Debug` implementation, and a `500` error is
-returned to the client.
 
 ## Rocket Responders
 
@@ -282,7 +278,6 @@ library. Among these are:
   * [`Json`] - Automatically serializes values into JSON.
   * [`MsgPack`] - Automatically serializes values into MessagePack.
   * [`Template`] - Renders a dynamic template using handlebars or Tera.
-  * [`Compress`] - Compresses a response at the HTTP layer.
 
 [`status`]: @api/rocket/response/status/
 [`response`]: @api/rocket/response/
@@ -292,7 +287,6 @@ library. Among these are:
 [`Stream`]: @api/rocket/response/struct.Stream.html
 [`Flash`]: @api/rocket/response/struct.Flash.html
 [`MsgPack`]: @api/rocket_contrib/msgpack/struct.MsgPack.html
-[`Compress`]: @api/rocket_contrib/compression/struct.Compress.html
 
 ### Streaming
 
@@ -354,12 +348,12 @@ The `Json` type serializes the structure into JSON, sets the Content-Type to
 JSON, and emits the serialized data in a fixed-sized body. If serialization
 fails, a **500 - Internal Server Error** is returned.
 
-The [JSON example on GitHub] provides further illustration.
+The [serialization example] provides further illustration.
 
 [`Json`]: @api/rocket_contrib/json/struct.Json.html
 [`Serialize`]: https://docs.serde.rs/serde/trait.Serialize.html
 [`serde`]: https://docs.serde.rs/serde/
-[JSON example on GitHub]: @example/json
+[serialization example]: @example/serialization
 
 ## Templates
 
@@ -399,10 +393,11 @@ fairings. To attach the template fairing, simply call
 
 # use rocket_contrib::templates::Template;
 
-fn main() {
-    rocket::ignite()
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
         .mount("/", routes![/* .. */])
-        .attach(Template::fairing());
+        .attach(Template::fairing())
 }
 ```
 
@@ -428,9 +423,8 @@ reloading is disabled.
 
 The [`Template`] API documentation contains more information about templates,
 including how to customize a template engine to add custom helpers and filters.
-The [Handlebars templates example](@example/handlebars_templates) is a
-fully composed application that makes use of Handlebars templates, while the
-[Tera templates example](@example/tera_templates) does the same for Tera.
+The [templating example](@example/templating) uses both Tera and Handlebars
+templating to implement the same application.
 
 [`Template`]: @api/rocket_contrib/templates/struct.Template.html
 [configurable]: ../configuration/#extras
@@ -459,7 +453,7 @@ For example, given the following route:
 # fn main() {}
 
 #[get("/<id>/<name>?<age>")]
-fn person(id: Option<usize>, name: String, age: Option<u8>) { /* .. */ }
+fn person(id: Option<usize>, name: &str, age: Option<u8>) { /* .. */ }
 ```
 
 URIs to `person` can be created as follows:
@@ -468,7 +462,7 @@ URIs to `person` can be created as follows:
 # #[macro_use] extern crate rocket;
 
 # #[get("/<id>/<name>?<age>")]
-# fn person(id: Option<usize>, name: String, age: Option<u8>) { /* .. */ }
+# fn person(id: Option<usize>, name: &str, age: Option<u8>) { /* .. */ }
 
 // with unnamed parameters, in route path declaration order
 let mike = uri!(person: 101, "Mike Smith", Some(28));
@@ -500,7 +494,7 @@ error: `person` route uri expects 3 parameters but 1 was supplied
 7 |     let x = uri!(person: "Mike Smith");
   |                          ^^^^^^^^^^^^
   |
-  = note: expected parameters: id: Option <usize>, name: String, age: Option <u8>
+  = note: expected parameters: id: Option <usize>, name: &str, age: Option <u8>
 ```
 
 Rocket also informs you of any type errors at compile-time:
@@ -534,17 +528,16 @@ As an example, consider the following form structure and route:
 # #[macro_use] extern crate rocket;
 # fn main() {}
 
-use rocket::http::RawStr;
-use rocket::request::Form;
+use rocket::form::Form;
 
 #[derive(FromForm, UriDisplayQuery)]
 struct UserDetails<'r> {
     age: Option<usize>,
-    nickname: &'r RawStr,
+    nickname: &'r str,
 }
 
 #[post("/user/<id>?<details..>")]
-fn add_user(id: usize, details: Form<UserDetails>) { /* .. */ }
+fn add_user(id: usize, details: UserDetails) { /* .. */ }
 ```
 
 By deriving using `UriDisplayQuery`, an implementation of `UriDisplay<Query>` is
@@ -554,17 +547,16 @@ automatically generated, allowing for URIs to `add_user` to be generated using
 ```rust
 # #[macro_use] extern crate rocket;
 
-# use rocket::http::RawStr;
-# use rocket::request::Form;
+# use rocket::form::Form;
 
 # #[derive(FromForm, UriDisplayQuery)]
 # struct UserDetails<'r> {
 #     age: Option<usize>,
-#     nickname: &'r RawStr,
+#     nickname: &'r str,
 # }
 
 # #[post("/user/<id>?<details..>")]
-# fn add_user(id: usize, details: Form<UserDetails>) { /* .. */ }
+# fn add_user(id: usize, details: UserDetails) { /* .. */ }
 
 let link = uri!(add_user: 120, UserDetails { age: Some(20), nickname: "Bob".into() });
 assert_eq!(link.to_string(), "/user/120?age=20&nickname=Bob");
@@ -600,7 +592,7 @@ generated.
 # #[macro_use] extern crate rocket;
 
 # #[get("/<id>/<name>?<age>")]
-# fn person(id: Option<usize>, name: String, age: Option<u8>) { /* .. */ }
+# fn person(id: Option<usize>, name: &str, age: Option<u8>) { /* .. */ }
 
 /// Note that `id` is `Option<usize>` in the route, but `id` in `uri!` _cannot_
 /// be an `Option`. `age`, on the other hand, _must_ be an `Option` (or `Result`
@@ -612,7 +604,7 @@ assert_eq!(mike.to_string(), "/101/Mike?age=28");
 ### Conversions
 
 [`FromUriParam`] is used to perform a conversion for each value passed to `uri!`
-before it is displayed with `UriDisplay`. If a `FromUriParam<P, S>`
+before it is displayed with `UriDisplay`. If a `T: FromUriParam<P, S>`
 implementation exists for a type `T` for part URI part `P`, then a value of type
 `S` can be used in `uri!` macro for a route URI parameter declared with a type
 of `T` in part `P`. For example, the following implementation, provided by
@@ -633,9 +625,7 @@ Other conversions to be aware of are:
 
   * `&T` to `T`
   * `&mut T` to `T`
-  * `&str` to `RawStr`
   * `String` to `&str`
-  * `String` to `RawStr`
   * `&str` to `&Path`
   * `&str` to `PathBuf`
   * `T` to `Form<T>`
@@ -645,23 +635,24 @@ The following conversions only apply to path parts:
   * `T` to `Option<T>`
   * `T` to `Result<T, E>`
 
-Conversions _nest_. For instance, a value of type `&T` can be supplied when a
-value of type `Option<Form<T>>` is expected:
+The following conversions are implemented only in query parts:
+
+  * `Option<T>` to `Result<T, E>` (for any `E`)
+  * `Result<T, E>` to `Option<T>` (for any `E`)
+
+Conversions are transitive. That is, a conversion from `A -> B` and a conversion
+`B -> C` implies a conversion from `A -> C`. For instance, a value of type
+`&str` can be supplied when a value of type `Option<PathBuf>` is expected:
 
 ```rust
 # #[macro_use] extern crate rocket;
 
-# use rocket::http::RawStr;
-# use rocket::request::Form;
+use std::path::PathBuf;
 
-# #[derive(FromForm, UriDisplayQuery)]
-# struct UserDetails<'r> { age: Option<usize>, nickname: &'r RawStr, }
+#[get("/person/<id>/<details..>")]
+fn person(id: usize, details: Option<PathBuf>) { /* .. */ }
 
-#[get("/person/<id>?<details..>")]
-fn person(id: usize, details: Option<Form<UserDetails>>) { /* .. */ }
-
-let details = UserDetails { age: Some(20), nickname: "Bob".into() };
-uri!(person: id = 100, details = Some(&details) );
+uri!(person: id = 100, details = "a/b/c");
 ```
 
 See the [`FromUriParam`] documentation for further details.

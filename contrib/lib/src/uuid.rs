@@ -14,18 +14,21 @@
 //! features = ["uuid"]
 //! ```
 
-pub extern crate uuid as uuid_crate;
+pub extern crate _uuid as extern_uuid;
 
 use std::fmt;
 use std::str::FromStr;
 use std::ops::Deref;
 
-use rocket::request::{FromParam, FromFormValue};
-use rocket::http::RawStr;
+use serde::{Deserialize, Serialize};
 
-type ParseError = <self::uuid_crate::Uuid as FromStr>::Err;
+use rocket::request::FromParam;
+use rocket::form::{self, FromFormField, ValueField};
 
-/// Implements [`FromParam`] and [`FromFormValue`] for accepting UUID values.
+/// UUID data and form guard: consume UUID values.
+///
+/// `Uuid` implements [`FromParam`] and [`FromFormField`], allowing UUID values
+/// to be accepted directly in paths, queries, and forms.
 ///
 /// # Usage
 ///
@@ -63,8 +66,11 @@ type ParseError = <self::uuid_crate::Uuid as FromStr>::Err;
 /// fn user(id: Uuid) -> String {
 ///     format!("User ID: {}", id)
 /// }
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Uuid(uuid_crate::Uuid);
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Uuid(_uuid::Uuid);
+
+pub type Error = <_uuid::Uuid as std::str::FromStr>::Err;
 
 impl Uuid {
     /// Consumes the Uuid wrapper, returning the underlying `Uuid` type.
@@ -74,10 +80,10 @@ impl Uuid {
     /// # extern crate rocket_contrib;
     /// # use std::str::FromStr;
     /// # fn main() {
-    /// use rocket_contrib::uuid::{uuid_crate, Uuid};
+    /// use rocket_contrib::uuid::{extern_uuid, Uuid};
     ///
     /// let uuid_str = "c1aa1e3b-9614-4895-9ebd-705255fa5bc2";
-    /// let real_uuid = uuid_crate::Uuid::from_str(uuid_str).unwrap();
+    /// let real_uuid = extern_uuid::Uuid::from_str(uuid_str).unwrap();
     /// let my_inner_uuid = Uuid::from_str(uuid_str)
     ///     .expect("valid UUID string")
     ///     .into_inner();
@@ -86,7 +92,7 @@ impl Uuid {
     /// # }
     /// ```
     #[inline(always)]
-    pub fn into_inner(self) -> uuid_crate::Uuid {
+    pub fn into_inner(self) -> _uuid::Uuid {
         self.0
     }
 }
@@ -99,29 +105,24 @@ impl fmt::Display for Uuid {
 }
 
 impl<'a> FromParam<'a> for Uuid {
-    type Error = ParseError;
+    type Error = Error;
 
     /// A value is successfully parsed if `param` is a properly formatted Uuid.
-    /// Otherwise, a `ParseError` is returned.
+    /// Otherwise, an error is returned.
     #[inline(always)]
-    fn from_param(param: &'a RawStr) -> Result<Uuid, Self::Error> {
+    fn from_param(param: &'a str) -> Result<Uuid, Self::Error> {
         param.parse()
     }
 }
 
-impl<'v> FromFormValue<'v> for Uuid {
-    type Error = &'v RawStr;
-
-    /// A value is successfully parsed if `form_value` is a properly formatted
-    /// Uuid. Otherwise, the raw form value is returned.
-    #[inline(always)]
-    fn from_form_value(form_value: &'v RawStr) -> Result<Uuid, &'v RawStr> {
-        form_value.parse().map_err(|_| form_value)
+impl<'v> FromFormField<'v> for Uuid {
+    fn from_value(field: ValueField<'v>) -> form::Result<'v, Self> {
+        Ok(field.value.parse().map_err(form::error::Error::custom)?)
     }
 }
 
 impl FromStr for Uuid {
-    type Err = ParseError;
+    type Err = Error;
 
     #[inline]
     fn from_str(s: &str) -> Result<Uuid, Self::Err> {
@@ -130,23 +131,22 @@ impl FromStr for Uuid {
 }
 
 impl Deref for Uuid {
-    type Target = uuid_crate::Uuid;
+    type Target = _uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl PartialEq<uuid_crate::Uuid> for Uuid {
+impl PartialEq<_uuid::Uuid> for Uuid {
     #[inline(always)]
-    fn eq(&self, other: &uuid_crate::Uuid) -> bool {
+    fn eq(&self, other: &_uuid::Uuid) -> bool {
         self.0.eq(other)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::uuid_crate;
     use super::Uuid;
     use super::FromParam;
     use super::FromStr;
@@ -169,8 +169,8 @@ mod test {
     fn test_into_inner() {
         let uuid_str = "c1aa1e3b-9614-4895-9ebd-705255fa5bc2";
         let uuid_wrapper = Uuid::from_param(uuid_str.into()).unwrap();
-        let real_uuid: uuid_crate::Uuid = uuid_str.parse().unwrap();
-        let inner_uuid: uuid_crate::Uuid = uuid_wrapper.into_inner();
+        let real_uuid: _uuid::Uuid = uuid_str.parse().unwrap();
+        let inner_uuid: _uuid::Uuid = uuid_wrapper.into_inner();
         assert_eq!(real_uuid, inner_uuid)
     }
 
@@ -178,7 +178,7 @@ mod test {
     fn test_partial_eq() {
         let uuid_str = "c1aa1e3b-9614-4895-9ebd-705255fa5bc2";
         let uuid_wrapper = Uuid::from_param(uuid_str.into()).unwrap();
-        let real_uuid: uuid_crate::Uuid = uuid_str.parse().unwrap();
+        let real_uuid: _uuid::Uuid = uuid_str.parse().unwrap();
         assert_eq!(uuid_wrapper, real_uuid)
     }
 
@@ -187,5 +187,17 @@ mod test {
     fn test_from_param_invalid() {
         let uuid_str = "c1aa1e3b-9614-4895-9ebd-705255fa5bc2p";
         Uuid::from_param(uuid_str.into()).unwrap();
+    }
+
+    #[test]
+    fn test_ser_de() {
+        // The main reason for this test is to test that UUID only serializes as
+        // a string token, not anything else. Like a Struct with a named field...
+        use serde_test::{Token, assert_tokens, Configure};
+        let uuid: Uuid = "c1aa1e3b-9614-4895-9ebd-705255fa5bc2".parse().unwrap();
+
+        assert_tokens(&uuid.readable(), &[
+            Token::Str("c1aa1e3b-9614-4895-9ebd-705255fa5bc2"),
+        ]);
     }
 }

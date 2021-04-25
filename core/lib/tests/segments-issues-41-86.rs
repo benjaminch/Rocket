@@ -33,10 +33,10 @@ mod tests {
 
     #[test]
     fn segments_works() {
-        let rocket = rocket::ignite()
+        let rocket = rocket::build()
             .mount("/", routes![test, two, one_two, none, dual])
             .mount("/point", routes![test, two, one_two, dual]);
-        let client = Client::tracked(rocket).unwrap();
+        let client = Client::debug(rocket).unwrap();
 
         // We construct a path that matches each of the routes above. We ensure the
         // prefix is stripped, confirming that dynamic segments are working.

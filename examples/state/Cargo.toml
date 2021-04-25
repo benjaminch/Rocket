@@ -1,9 +1,10 @@
 [package]
 name = "state"
 version = "0.0.0"
-workspace = "../../"
+workspace = "../"
 edition = "2018"
 publish = false
 
 [dependencies]
 rocket = { path = "../../core/lib" }
+flume = "0.10"

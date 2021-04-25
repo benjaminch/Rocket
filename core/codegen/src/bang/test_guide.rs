@@ -26,9 +26,18 @@ fn entry_to_tests(root_glob: &LitStr) -> Result<Vec<TokenStream>, Box<dyn Error>
                 .replace(|c| c == '-' || c == '.', "_"))
             .ok_or_else(|| "invalid file name")?;
 
-        let ident = Ident::new(&name, root_glob.span());
+        let ident = Ident::new(&name.to_lowercase(), root_glob.span());
         let full_path = Path::new(&manifest_dir).join(&path).display().to_string();
-        tests.push(quote_spanned!(root_glob.span() => doc_comment::doctest!(#full_path, #ident);))
+        tests.push(quote_spanned!(root_glob.span() =>
+            mod #ident {
+                macro_rules! doc_comment { ($x:expr) => (#[doc = $x] extern {}); }
+                doc_comment!(include_str!(#full_path));
+            }
+        ));
+    }
+
+    if tests.is_empty() {
+        return Err(format!("glob '{}' evaluates to 0 files", full_glob).into());
     }
 
     Ok(tests)

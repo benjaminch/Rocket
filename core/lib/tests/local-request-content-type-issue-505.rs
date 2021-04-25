@@ -7,10 +7,10 @@ use rocket::outcome::IntoOutcome;
 struct HasContentType;
 
 #[rocket::async_trait]
-impl<'a, 'r> FromRequest<'a, 'r> for HasContentType {
+impl<'r> FromRequest<'r> for HasContentType {
     type Error = ();
 
-    async fn from_request(req: &'a Request<'r>) -> request::Outcome<Self, ()> {
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, ()> {
         req.content_type().map(|_| HasContentType).or_forward(())
     }
 }
@@ -18,10 +18,10 @@ impl<'a, 'r> FromRequest<'a, 'r> for HasContentType {
 use rocket::data::{self, FromData};
 
 #[rocket::async_trait]
-impl FromData for HasContentType {
+impl<'r> FromData<'r> for HasContentType {
     type Error = ();
 
-    async fn from_data(req: &Request<'_>, data: Data) -> data::Outcome<Self, ()> {
+    async fn from_data(req: &'r Request<'_>, data: Data) -> data::Outcome<Self, ()> {
         req.content_type().map(|_| HasContentType).or_forward(data)
     }
 }
@@ -44,17 +44,17 @@ fn data_no_ct() -> &'static str {
 mod local_request_content_type_tests {
     use super::*;
 
-    use rocket::Rocket;
+    use rocket::{Rocket, Build};
     use rocket::local::blocking::Client;
     use rocket::http::ContentType;
 
-    fn rocket() -> Rocket {
-        rocket::ignite().mount("/", routes![rg_ct, data_has_ct, data_no_ct])
+    fn rocket() -> Rocket<Build> {
+        rocket::build().mount("/", routes![rg_ct, data_has_ct, data_no_ct])
     }
 
     #[test]
     fn has_no_ct() {
-        let client = Client::tracked(rocket()).unwrap();
+        let client = Client::debug(rocket()).unwrap();
 
         let req = client.post("/");
         assert_eq!(req.clone().dispatch().into_string(), Some("Absent".to_string()));
@@ -69,7 +69,7 @@ mod local_request_content_type_tests {
 
     #[test]
     fn has_ct() {
-        let client = Client::tracked(rocket()).unwrap();
+        let client = Client::debug(rocket()).unwrap();
 
         let req = client.post("/").header(ContentType::JSON);
         assert_eq!(req.clone().dispatch().into_string(), Some("Present".to_string()));

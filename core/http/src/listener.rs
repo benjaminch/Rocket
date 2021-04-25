@@ -6,9 +6,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use hyper::server::accept::Accept;
-
 use log::{debug, error};
+use hyper::server::accept::Accept;
 
 use tokio::time::Sleep;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -18,6 +17,7 @@ use tokio::net::{TcpListener, TcpStream};
 // that they could be introduced in upstream libraries.
 /// A 'Listener' yields incoming connections
 pub trait Listener {
+    /// The connection type returned by this listener.
     type Connection: Connection;
 
     /// Return the actual address this listener bound to.
@@ -29,6 +29,7 @@ pub trait Listener {
 
 /// A 'Connection' represents an open connection to a client
 pub trait Connection: AsyncRead + AsyncWrite {
+    /// The remote address, i.e. the client's socket address.
     fn remote_addr(&self) -> Option<SocketAddr>;
 }
 
@@ -51,7 +52,7 @@ impl<L: Listener> Incoming<L> {
     pub fn from_listener(listener: L) -> Self {
         Self {
             listener,
-            sleep_on_errors: Some(Duration::from_secs(1)),
+            sleep_on_errors: Some(Duration::from_millis(250)),
             pending_error_delay: None,
         }
     }
@@ -77,14 +78,22 @@ impl<L: Listener> Incoming<L> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<L::Connection>> {
         let mut me = self.project();
+        let mut optimistic_retry = true;
         loop {
             // Check if a previous sleep timer is active that was set by IO errors.
             if let Some(delay) = me.pending_error_delay.as_mut().as_pin_mut() {
-                match delay.poll(cx) {
-                    Poll::Ready(()) => {}
-                    Poll::Pending => return Poll::Pending,
+                if optimistic_retry {
+                    error!("optimistically retrying now");
+                    optimistic_retry = false;
+                } else {
+                    error!("retrying in {:?}", me.sleep_on_errors);
+                    match delay.poll(cx) {
+                        Poll::Ready(()) => {}
+                        Poll::Pending => return Poll::Pending,
+                    }
                 }
             }
+
             me.pending_error_delay.set(None);
 
             match me.listener.poll_accept(cx) {
@@ -101,7 +110,7 @@ impl<L: Listener> Incoming<L> {
                     }
 
                     if let Some(duration) = me.sleep_on_errors {
-                        error!("accept error: {}", e);
+                        error!("connection accept error: {}", e);
 
                         // Sleep for the specified duration
                         me.pending_error_delay.set(Some(tokio::time::sleep(*duration)));
@@ -150,6 +159,7 @@ impl<L: fmt::Debug> fmt::Debug for Incoming<L> {
     }
 }
 
+/// Binds a TCP listener to `address` and returns it.
 pub async fn bind_tcp(address: SocketAddr) -> io::Result<TcpListener> {
     Ok(TcpListener::bind(address).await?)
 }

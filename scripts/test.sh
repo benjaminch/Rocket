@@ -10,9 +10,6 @@ export PATH=${HOME}/.cargo/bin:${PATH}
 export CARGO_INCREMENTAL=0
 CARGO="cargo"
 
-# We set a `cfg` so that a missing `secret_key` doesn't abort tests.
-export RUSTFLAGS="--cfg rocket_unsafe_secret_key"
-
 # Checks that the versions for Cargo projects $@ all match
 function check_versions_match() {
   local last_version=""
@@ -54,15 +51,99 @@ function ensure_trailing_whitespace_free() {
   fi
 }
 
+function test_contrib() {
+  FEATURES=(
+    json
+    msgpack
+    tera_templates
+    handlebars_templates
+    serve
+    helmet
+    diesel_postgres_pool
+    diesel_sqlite_pool
+    diesel_mysql_pool
+    postgres_pool
+    sqlite_pool
+    memcache_pool
+    brotli_compression
+    gzip_compression
+  )
+
+  echo ":: Building and testing contrib [default]..."
+
+  pushd "${CONTRIB_LIB_ROOT}" > /dev/null 2>&1
+    $CARGO test $@
+
+    for feature in "${FEATURES[@]}"; do
+      echo ":: Building and testing contrib [${feature}]..."
+      $CARGO test --no-default-features --features "${feature}" $@
+    done
+  popd > /dev/null 2>&1
+}
+
+function test_core() {
+  FEATURES=(
+    secrets
+    tls
+  )
+
+  pushd "${CORE_LIB_ROOT}" > /dev/null 2>&1
+    echo ":: Building and testing core [no features]..."
+    $CARGO test --no-default-features $@
+
+    for feature in "${FEATURES[@]}"; do
+      echo ":: Building and testing core [${feature}]..."
+      $CARGO test --no-default-features --features "${feature}" $@
+    done
+  popd > /dev/null 2>&1
+}
+
+function test_examples() {
+  echo ":: Building and testing examples..."
+
+  pushd "${EXAMPLES_DIR}" > /dev/null 2>&1
+    # Rust compiles Rocket once with the `secrets` feature enabled, so when run
+    # in production, we need a secret key or tests will fail needlessly. We
+    # ensure in core that secret key failing/not failing works as expected.
+    ROCKET_SECRET_KEY="itlYmFR2vYKrOmFhupMIn/hyB6lYCCTXz4yaQX89XVg=" \
+      $CARGO test --all $@
+  popd > /dev/null 2>&1
+}
+
+function test_default() {
+  echo ":: Building and testing core libraries..."
+
+  pushd "${PROJECT_ROOT}" > /dev/null 2>&1
+    $CARGO test --all --all-features $@
+  popd > /dev/null 2>&1
+}
+
+function run_benchmarks() {
+  echo ":: Running benchmarks..."
+
+  pushd "${BENCHMARKS_ROOT}" > /dev/null 2>&1
+    $CARGO bench $@
+  popd > /dev/null 2>&1
+}
+
 if [[ $1 == +* ]]; then
     CARGO="$CARGO $1"
+    shift
+fi
+
+# The kind of test we'll be running.
+TEST_KIND="default"
+KINDS=("contrib" "benchmarks" "core" "examples" "default" "all")
+
+if [[ " ${KINDS[@]} " =~ " ${1#"--"} " ]]; then
+    TEST_KIND=${1#"--"}
     shift
 fi
 
 echo ":: Preparing. Environment is..."
 print_environment
 echo "  CARGO: $CARGO"
-echo "  RUSTFLAGS: $RUSTFLAGS"
+echo "  EXTRA FLAGS: $@"
 
 echo ":: Ensuring all crate versions match..."
 check_versions_match "${ALL_PROJECT_DIRS[@]}"
@@ -78,54 +159,34 @@ if ! $CARGO update ; then
   echo "   WARNING: Update failed! Proceeding with possibly outdated deps..."
 fi
 
-if [ "$1" = "--contrib" ]; then
-  FEATURES=(
-    json
-    msgpack
-    tera_templates
-    handlebars_templates
-    serve
-    helmet
-    diesel_postgres_pool
-    diesel_sqlite_pool
-    diesel_mysql_pool
-    postgres_pool
-    mysql_pool
-    sqlite_pool
-    memcache_pool
-    brotli_compression
-    gzip_compression
-  )
+case $TEST_KIND in
+  core) test_core $@ ;;
+  contrib) test_contrib $@ ;;
+  examples) test_examples $@ ;;
+  default) test_default $@ ;;
+  benchmarks) run_benchmarks $@ ;;
+  all)
+    test_default $@ & default=$!
+    test_examples $@ & examples=$!
+    test_core $@ & core=$!
+    test_contrib $@ & contrib=$!
 
-  pushd "${CONTRIB_LIB_ROOT}" > /dev/null 2>&1
+    failures=()
+    if ! wait $default ; then failures+=("ROOT WORKSPACE"); fi
+    if ! wait $examples ; then failures+=("EXAMPLES"); fi
+    if ! wait $core ; then failures+=("CORE"); fi
+    if ! wait $contrib ; then failures+=("CONTRIB"); fi
 
-  echo ":: Building and testing contrib [default]..."
-  $CARGO test
+    if [ ${#failures[@]} -ne 0 ]; then
+      tput setaf 1;
+      echo -e "\n!!! ${#failures[@]} TEST SUITE FAILURE(S) !!!"
+      for failure in "${failures[@]}"; do
+        echo "    :: ${failure}"
+      done
 
-  for feature in "${FEATURES[@]}"; do
-    echo ":: Building and testing contrib [${feature}]..."
-    $CARGO test --no-default-features --features "${feature}"
-  done
+      tput sgr0
+      exit ${#failures[@]}
+    fi
 
-  popd > /dev/null 2>&1
-elif [ "$1" = "--core" ]; then
-  FEATURES=(
-    secrets
-    tls
-  )
-
-  pushd "${CORE_LIB_ROOT}" > /dev/null 2>&1
-
-  echo ":: Building and testing core [no features]..."
-  $CARGO test --no-default-features
-
-  for feature in "${FEATURES[@]}"; do
-    echo ":: Building and testing core [${feature}]..."
-    $CARGO test --no-default-features --features "${feature}"
-  done
-
-  popd > /dev/null 2>&1
-else
-  echo ":: Building and testing libraries..."
-  $CARGO test --all-features --all $@
-fi
+    ;;
+esac

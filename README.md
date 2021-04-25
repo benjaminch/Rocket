@@ -13,13 +13,13 @@ extensibility, and speed.
 #[macro_use] extern crate rocket;
 
 #[get("/<name>/<age>")]
-fn hello(name: String, age: u8) -> String {
+fn hello(name: &str, age: u8) -> String {
     format!("Hello, {} year old named {}!", age, name)
 }
 
 #[launch]
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/hello", routes![hello])
+fn rocket() -> _ {
+    rocket::build().mount("/hello", routes![hello])
 }
 ```
 
@@ -159,7 +159,7 @@ Apache License, Version 2.0, without any additional terms or conditions.
 
 Rocket is licensed under either of the following, at your option:
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
+ * MIT License ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
 
 The Rocket website source is licensed under [separate terms](site#license).

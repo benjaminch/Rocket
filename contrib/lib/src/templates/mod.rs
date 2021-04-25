@@ -26,7 +26,7 @@
 //!      use rocket_contrib::templates::Template;
 //!
 //!      fn main() {
-//!          rocket::ignite()
+//!          rocket::build()
 //!              .attach(Template::fairing())
 //!              // ...
 //!          # ;
@@ -137,7 +137,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::error::Error;
 
-use rocket::Rocket;
+use rocket::{Rocket, Orbit, Ignite, Sentinel};
 use rocket::request::Request;
 use rocket::fairing::Fairing;
 use rocket::response::{self, Content, Responder};
@@ -169,7 +169,7 @@ const DEFAULT_TEMPLATE_DIR: &str = "templates";
 /// use rocket_contrib::templates::Template;
 ///
 /// fn main() {
-///     rocket::ignite()
+///     rocket::build()
 ///         .attach(Template::fairing())
 ///         // ...
 ///     # ;
@@ -237,7 +237,7 @@ impl Template {
     /// use rocket_contrib::templates::Template;
     ///
     /// fn main() {
-    ///     rocket::ignite()
+    ///     rocket::build()
     ///         // ...
     ///         .attach(Template::fairing())
     ///         // ...
@@ -266,7 +266,7 @@ impl Template {
     /// use rocket_contrib::templates::Template;
     ///
     /// fn main() {
-    ///     rocket::ignite()
+    ///     rocket::build()
     ///         // ...
     ///         .attach(Template::custom(|engines| {
     ///             // engines.handlebars.register_helper ...
@@ -297,7 +297,7 @@ impl Template {
     /// use rocket_contrib::templates::Template;
     ///
     /// fn main() {
-    ///     rocket::ignite()
+    ///     rocket::build()
     ///         // ...
     ///         .attach(Template::try_custom(|engines| {
     ///             // engines.handlebars.register_helper ...
@@ -352,7 +352,7 @@ impl Template {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// # extern crate rocket;
     /// # extern crate rocket_contrib;
     /// use std::collections::HashMap;
@@ -361,7 +361,7 @@ impl Template {
     /// use rocket::local::blocking::Client;
     ///
     /// fn main() {
-    ///     let rocket = rocket::ignite().attach(Template::fairing());
+    ///     let rocket = rocket::build().attach(Template::fairing());
     ///     let client = Client::untracked(rocket).expect("valid rocket");
     ///
     ///     // Create a `context`. Here, just an empty `HashMap`.
@@ -373,7 +373,7 @@ impl Template {
     /// }
     /// ```
     #[inline]
-    pub fn show<S, C>(rocket: &Rocket, name: S, context: C) -> Option<String>
+    pub fn show<S, C>(rocket: &Rocket<Orbit>, name: S, context: C) -> Option<String>
         where S: Into<Cow<'static, str>>, C: Serialize
     {
         let ctxt = rocket.state::<ContextManager>().map(ContextManager::context).or_else(|| {
@@ -395,8 +395,8 @@ impl Template {
         let info = ctxt.templates.get(name).ok_or_else(|| {
             let ts: Vec<_> = ctxt.templates.keys().map(|s| s.as_str()).collect();
             error_!("Template '{}' does not exist.", name);
-            info_!("Known templates: {}", ts.join(","));
-            info_!("Searched in '{:?}'.", ctxt.root);
+            info_!("Known templates: {}", ts.join(", "));
+            info_!("Searched in {:?}.", ctxt.root);
             Status::InternalServerError
         })?;
 
@@ -420,7 +420,7 @@ impl Template {
 impl<'r> Responder<'r, 'static> for Template {
     fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
         let (render, content_type) = {
-            let ctxt = req.managed_state::<ContextManager>().ok_or_else(|| {
+            let ctxt = req.rocket().state::<ContextManager>().ok_or_else(|| {
                 error_!("Uninitialized template context: missing fairing.");
                 info_!("To use templates, you must attach `Template::fairing()`.");
                 info_!("See the `Template` documentation for more information.");
@@ -431,5 +431,20 @@ impl<'r> Responder<'r, 'static> for Template {
         };
 
         Content(content_type, render).respond_to(req)
+    }
+}
+
+impl Sentinel for Template {
+    fn abort(rocket: &Rocket<Ignite>) -> bool {
+        if rocket.state::<ContextManager>().is_none() {
+            let template = rocket::yansi::Paint::default("Template").bold();
+            let fairing = rocket::yansi::Paint::default("Template::fairing()").bold();
+            error!("returning `{}` responder without attaching `{}`.", template, fairing);
+            info_!("To use or query templates, you must attach `{}`.", fairing);
+            info_!("See the `Template` documentation for more information.");
+            return true;
+        }
+
+        false
     }
 }

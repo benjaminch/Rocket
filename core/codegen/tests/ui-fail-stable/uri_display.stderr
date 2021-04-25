@@ -1,8 +1,8 @@
-error: fieldless structs or variants are not supported
- --> $DIR/uri_display.rs:4:8
+error: fieldless structs are not supported
+ --> $DIR/uri_display.rs:4:1
   |
 4 | struct Foo1;
-  |        ^^^^
+  | ^^^^^^
 
 error: [note] error occurred while deriving `UriDisplay`
  --> $DIR/uri_display.rs:3:10
@@ -12,11 +12,11 @@ error: [note] error occurred while deriving `UriDisplay`
   |
   = note: this error originates in a derive macro (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: fieldless structs or variants are not supported
- --> $DIR/uri_display.rs:7:8
+error: fieldless structs are not supported
+ --> $DIR/uri_display.rs:7:1
   |
 7 | struct Foo2();
-  |        ^^^^
+  | ^^^^^^
 
 error: [note] error occurred while deriving `UriDisplay`
  --> $DIR/uri_display.rs:6:10
@@ -40,20 +40,6 @@ error: [note] error occurred while deriving `UriDisplay`
   |
   = note: this error originates in a derive macro (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: fieldless structs or variants are not supported
-  --> $DIR/uri_display.rs:14:5
-   |
-14 |     Variant,
-   |     ^^^^^^^
-
-error: [note] error occurred while deriving `UriDisplay`
-  --> $DIR/uri_display.rs:12:10
-   |
-12 | #[derive(UriDisplayQuery)]
-   |          ^^^^^^^^^^^^^^^
-   |
-   = note: this error originates in a derive macro (in Nightly builds, run with -Z macro-backtrace for more info)
-
 error: tuple structs or variants must have exactly one field
   --> $DIR/uri_display.rs:18:12
    |
@@ -68,10 +54,10 @@ error: [note] error occurred while deriving `UriDisplay`
    |
    = note: this error originates in a derive macro (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: invalid value: expected string literal
+error: expected list `#[attr(..)]`, found bare integer literal
   --> $DIR/uri_display.rs:22:20
    |
-22 |     #[form(field = 123)]
+22 |     #[field(name = 123)]
    |                    ^^^
 
 error: [note] error occurred while deriving `UriDisplay`
@@ -97,10 +83,10 @@ error: [note] error occurred while deriving `UriDisplay`
    = note: this error originates in a derive macro (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: struct must have exactly one field
-  --> $DIR/uri_display.rs:30:8
+  --> $DIR/uri_display.rs:30:1
    |
 30 | struct Foo8;
-   |        ^^^^
+   | ^^^^^^
 
 error: [note] error occurred while deriving `UriDisplay`
   --> $DIR/uri_display.rs:29:10

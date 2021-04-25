@@ -1,11 +1,47 @@
 //! Extensions to `syn` types.
 
-use devise::ext::SpanDiagnosticExt;
-use devise::syn::{self, Ident, ext::IdentExt as _};
+use std::ops::Deref;
+
+use crate::syn::{self, Ident, ext::IdentExt as _, visit::Visit};
+use crate::proc_macro2::Span;
 
 pub trait IdentExt {
     fn prepend(&self, string: &str) -> syn::Ident;
     fn append(&self, string: &str) -> syn::Ident;
+    fn with_span(self, span: Span) -> syn::Ident;
+    fn rocketized(&self) -> syn::Ident;
+}
+
+pub trait ReturnTypeExt {
+    fn ty(&self) -> Option<&syn::Type>;
+}
+
+pub trait TokenStreamExt {
+    fn respanned(&self, span: crate::proc_macro2::Span) -> Self;
+}
+
+pub trait FnArgExt {
+    fn typed(&self) -> Option<(&syn::Ident, &syn::Type)>;
+    fn wild(&self) -> Option<&syn::PatWild>;
+}
+
+#[derive(Debug)]
+pub struct Child<'a> {
+    pub parent: Option<&'a syn::Type>,
+    pub ty: &'a syn::Type,
+}
+
+impl Deref for Child<'_> {
+    type Target = syn::Type;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ty
+    }
+}
+
+pub trait TypeExt {
+    fn unfold(&self) -> Vec<Child<'_>>;
+    fn is_concrete(&self, generic_ident: &[&Ident]) -> bool;
 }
 
 impl IdentExt for syn::Ident {
@@ -16,10 +52,15 @@ impl IdentExt for syn::Ident {
     fn append(&self, string: &str) -> syn::Ident {
         syn::Ident::new(&format!("{}{}", self, string), self.span())
     }
-}
 
-pub trait ReturnTypeExt {
-    fn ty(&self) -> Option<&syn::Type>;
+    fn with_span(mut self, span: Span) -> syn::Ident {
+        self.set_span(span);
+        self
+    }
+
+    fn rocketized(&self) -> syn::Ident {
+        self.prepend(crate::ROCKET_IDENT_PREFIX)
+    }
 }
 
 impl ReturnTypeExt for syn::ReturnType {
@@ -31,10 +72,6 @@ impl ReturnTypeExt for syn::ReturnType {
     }
 }
 
-pub trait TokenStreamExt {
-    fn respanned(&self, span: crate::proc_macro2::Span) -> Self;
-}
-
 impl TokenStreamExt for crate::proc_macro2::TokenStream {
     fn respanned(&self, span: crate::proc_macro2::Span) -> Self {
         self.clone().into_iter().map(|mut token| {
@@ -44,82 +81,93 @@ impl TokenStreamExt for crate::proc_macro2::TokenStream {
     }
 }
 
-/// Represents the source of a name read by codegen, which may or may not be a
-/// valid identifier. A `NameSource` is typically constructed indirectly via
-/// FromMeta, or From<Ident> or directly from a string via `NameSource::new()`.
-///
-/// NameSource implements Hash, PartialEq, and Eq, and additionally PartialEq<S>
-/// for all types `S: AsStr<str>`. These implementations all compare the value
-/// of `name()` only.
-#[derive(Debug, Clone)]
-pub struct NameSource {
-    name: String,
-    ident: Option<Ident>,
-}
-
-impl NameSource {
-    /// Creates a new `NameSource` from the string `name` and span `span`. If
-    /// `name` is a valid ident, the ident is stored as well.
-    pub fn new<S: AsRef<str>>(name: S, span: crate::proc_macro2::Span) -> Self {
-        let name = name.as_ref();
-        syn::parse_str::<Ident>(name)
-            .map(|mut ident| { ident.set_span(span); ident })
-            .map(|ident| NameSource::from(ident))
-            .unwrap_or_else(|_| NameSource { name: name.into(), ident: None })
+impl FnArgExt for syn::FnArg {
+    fn typed(&self) -> Option<(&Ident, &syn::Type)> {
+        match self {
+            syn::FnArg::Typed(arg) => match *arg.pat {
+                syn::Pat::Ident(ref pat) => Some((&pat.ident, &arg.ty)),
+                _ => None
+            }
+            _ => None,
+        }
     }
 
-    /// Returns the name as a string. Notably, if `self` was constructed from an
-    /// Ident this method returns a name *without* an `r#` prefix.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the Ident corresponding to `self`, if any, otherwise panics. If
-    /// `self` was constructed from an `Ident`, this never panics. Otherwise,
-    /// panics if the string `self` was constructed from was not a valid ident.
-    pub fn ident(&self) -> &Ident {
-        self.ident.as_ref().expect("ident from namesource")
+    fn wild(&self) -> Option<&syn::PatWild> {
+        match self {
+            syn::FnArg::Typed(arg) => match *arg.pat {
+                syn::Pat::Wild(ref pat) => Some(pat),
+                _ => None
+            }
+            _ => None,
+        }
     }
 }
 
-impl devise::FromMeta for NameSource {
-    fn from_meta(meta: devise::MetaItem<'_>) -> devise::Result<Self> {
-        if let syn::Lit::Str(s) = meta.lit()? {
-            return Ok(NameSource::new(s.value(), s.span()));
+impl TypeExt for syn::Type {
+    fn unfold(&self) -> Vec<Child<'_>> {
+        #[derive(Default)]
+        struct Visitor<'a> {
+            parents: Vec<&'a syn::Type>,
+            children: Vec<Child<'a>>,
         }
 
-        Err(meta.value_span().error("invalid value: expected string literal"))
+        impl<'a> Visit<'a> for Visitor<'a> {
+            fn visit_type(&mut self, ty: &'a syn::Type) {
+                self.children.push(Child { parent: self.parents.last().cloned(), ty });
+                self.parents.push(ty);
+                syn::visit::visit_type(self, ty);
+                self.parents.pop();
+            }
+        }
+
+        let mut visitor = Visitor::default();
+        visitor.visit_type(self);
+        visitor.children
+    }
+
+    fn is_concrete(&self, generics: &[&Ident]) -> bool {
+        struct ConcreteVisitor<'i>(bool, &'i [&'i Ident]);
+
+        impl<'a, 'i> Visit<'a> for ConcreteVisitor<'i> {
+            fn visit_type(&mut self, ty: &'a syn::Type) {
+                use syn::Type::*;
+
+                match ty {
+                    Path(t) if self.1.iter().any(|i| t.path.is_ident(*i)) => {
+                        self.0 = false;
+                        return;
+                    }
+                    ImplTrait(_) | Infer(_) => {
+                        self.0 = false;
+                        return;
+                    }
+                    BareFn(_) | Never(_) => {
+                        self.0 = true;
+                        return;
+                    },
+                    _ => syn::visit::visit_type(self, ty),
+                }
+            }
+        }
+
+        let mut visitor = ConcreteVisitor(true, generics);
+        visitor.visit_type(self);
+        visitor.0
     }
 }
 
-impl From<Ident> for NameSource {
-    fn from(ident: Ident) -> Self {
-        Self { name: ident.unraw().to_string(), ident: Some(ident), }
-    }
-}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_type_unfold_is_generic() {
+        use super::{TypeExt, syn};
 
-impl std::hash::Hash for NameSource {
-    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
-        self.name().hash(hasher)
-    }
-}
+        let ty: syn::Type = syn::parse_quote!(A<B, C<impl Foo>, Box<dyn Foo>, Option<T>>);
+        let children = ty.unfold();
+        assert_eq!(children.len(), 8);
 
-impl PartialEq for NameSource {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for NameSource { }
-
-impl<S: AsRef<str>> PartialEq<S> for NameSource {
-    fn eq(&self, other: &S) -> bool {
-        self.name == other.as_ref()
-    }
-}
-
-impl std::fmt::Display for NameSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name().fmt(f)
+        let gen_ident = format_ident!("T");
+        let gen = &[&gen_ident];
+        assert_eq!(children.iter().filter(|c| c.ty.is_concrete(gen)).count(), 3);
     }
 }

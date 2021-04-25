@@ -1,21 +1,20 @@
 #[macro_use] extern crate rocket;
 
-use rocket::request::{Form, LenientForm};
-use rocket::http::RawStr;
+use rocket::form::{Form, Strict};
 
 #[derive(FromForm)]
 struct MyForm<'r> {
-    field: &'r RawStr,
+    field: &'r str,
 }
 
 #[post("/strict", data = "<form>")]
-fn strict<'r>(form: Form<MyForm<'r>>) -> String {
-    form.field.as_str().into()
+fn strict<'r>(form: Form<Strict<MyForm<'r>>>) -> &'r str {
+    form.field
 }
 
 #[post("/lenient", data = "<form>")]
-fn lenient<'r>(form: LenientForm<MyForm<'r>>) -> String {
-    form.field.as_str().into()
+fn lenient<'r>(form: Form<MyForm<'r>>) -> &'r str {
+    form.field
 }
 
 mod strict_and_lenient_forms_tests {
@@ -26,7 +25,7 @@ mod strict_and_lenient_forms_tests {
     const FIELD_VALUE: &str = "just_some_value";
 
     fn client() -> Client {
-        Client::tracked(rocket::ignite().mount("/", routes![strict, lenient])).unwrap()
+        Client::debug_with(routes![strict, lenient]).unwrap()
     }
 
     #[test]

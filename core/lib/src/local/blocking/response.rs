@@ -24,11 +24,10 @@ use super::Client;
 ///     "Hello, world!"
 /// }
 ///
-/// # /*
 /// #[launch]
-/// # */
-/// fn rocket() -> rocket::Rocket {
-///     rocket::ignite().mount("/", routes![hello_world])
+/// fn rocket() -> _ {
+///     rocket::build().mount("/", routes![hello_world])
+///     #    .configure(rocket::Config::debug_default())
 /// }
 ///
 /// # fn read_body_manually() -> io::Result<()> {
@@ -73,7 +72,7 @@ impl LocalResponse<'_> {
     }
 
     // Generates the public API methods, which call the private methods above.
-    pub_response_impl!("# use rocket::local::blocking::Client;
+    pub_response_impl!("# use rocket::local::blocking::Client;\n\
         use rocket::local::blocking::LocalResponse;");
 }
 

@@ -1,12 +1,10 @@
-use std::convert::AsRef;
-
 use time::Duration;
 use serde::ser::{Serialize, Serializer, SerializeStruct};
 
 use crate::outcome::IntoOutcome;
 use crate::response::{self, Responder};
 use crate::request::{self, Request, FromRequest};
-use crate::http::{Status, Cookie};
+use crate::http::{Status, Cookie, CookieJar};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // The name of the actual flash cookie.
@@ -27,14 +25,14 @@ const FLASH_COOKIE_DELIM: char = ':';
 ///
 /// # Usage
 ///
-/// Each `Flash` message consists of a `name` and some `msg` contents. A generic
-/// constructor ([new](#method.new)) can be used to construct a message with any
-/// name, while the [warning](#method.warning), [success](#method.success), and
+/// Each `Flash` message consists of a `kind` and `message`. A generic
+/// constructor ([new](#method.new)) can be used to construct a message of any
+/// kind, while the [warning](#method.warning), [success](#method.success), and
 /// [error](#method.error) constructors create messages with the corresponding
-/// names.
+/// kinds.
 ///
 /// Messages can be retrieved on the request side via the [`FlashMessage`] type
-/// and the [name](#method.name) and [msg](#method.msg) methods.
+/// and the [kind](#method.kind) and [message](#method.message) methods.
 ///
 /// # Response
 ///
@@ -52,20 +50,19 @@ const FLASH_COOKIE_DELIM: char = ':';
 /// # #[macro_use] extern crate rocket;
 /// use rocket::response::{Flash, Redirect};
 /// use rocket::request::FlashMessage;
-/// use rocket::http::RawStr;
 ///
 /// #[post("/login/<name>")]
-/// fn login(name: &RawStr) -> Result<&'static str, Flash<Redirect>> {
+/// fn login(name: &str) -> Result<&'static str, Flash<Redirect>> {
 ///     if name == "special_user" {
 ///         Ok("Hello, special user!")
 ///     } else {
-///         Err(Flash::error(Redirect::to("/"), "Invalid username."))
+///         Err(Flash::error(Redirect::to(uri!(index)), "Invalid username."))
 ///     }
 /// }
 ///
 /// #[get("/")]
-/// fn index(flash: Option<FlashMessage>) -> String {
-///     flash.map(|msg| format!("{}: {}", msg.name(), msg.msg()))
+/// fn index(flash: Option<FlashMessage<'_>>) -> String {
+///     flash.map(|flash| format!("{}: {}", flash.kind(), flash.message()))
 ///          .unwrap_or_else(|| "Welcome!".to_string())
 /// }
 /// ```
@@ -78,8 +75,8 @@ const FLASH_COOKIE_DELIM: char = ':';
 /// receive the standard welcome message.
 #[derive(Debug)]
 pub struct Flash<R> {
-    pub name: String,
-    pub message: String,
+    kind: String,
+    message: String,
     consumed: AtomicBool,
     inner: R,
 }
@@ -92,15 +89,15 @@ pub struct Flash<R> {
 /// there is a flash cookie present (set by the `Flash` `Responder`), a
 /// `FlashMessage` request guard will succeed.
 ///
-/// The flash cookie is cleared if either the [`name()`] or [`msg()`] method is
+/// The flash cookie is cleared if either the [`kind()`] or [`message()`] method is
 /// called. If neither method is called, the flash cookie is not cleared.
 ///
-/// [`name()`]: Flash::name()
-/// [`msg()`]: Flash::msg()
-pub type FlashMessage<'a, 'r> = crate::response::Flash<&'a Request<'r>>;
+/// [`kind()`]: Flash::kind()
+/// [`message()`]: Flash::message()
+pub type FlashMessage<'a> = crate::response::Flash<&'a CookieJar<'a>>;
 
 impl<R> Flash<R> {
-    /// Constructs a new `Flash` message with the given `name`, `msg`, and
+    /// Constructs a new `Flash` message with the given `kind`, `message`, and
     /// underlying `responder`.
     ///
     /// # Examples
@@ -112,19 +109,19 @@ impl<R> Flash<R> {
     /// use rocket::response::{Redirect, Flash};
     ///
     /// # #[allow(unused_variables)]
-    /// let msg = Flash::new(Redirect::to("/"), "suggestion", "Try this out!");
+    /// let message = Flash::new(Redirect::to("/"), "suggestion", "Try this out!");
     /// ```
-    pub fn new<N: AsRef<str>, M: AsRef<str>>(res: R, name: N, msg: M) -> Flash<R> {
+    pub fn new<K: Into<String>, M: Into<String>>(res: R, kind: K, message: M) -> Flash<R> {
         Flash {
-            name: name.as_ref().to_string(),
-            message: msg.as_ref().to_string(),
+            kind: kind.into(),
+            message: message.into(),
             consumed: AtomicBool::default(),
             inner: res,
         }
     }
 
     /// Constructs a "success" `Flash` message with the given `responder` and
-    /// `msg`.
+    /// `message`.
     ///
     /// # Examples
     ///
@@ -135,14 +132,14 @@ impl<R> Flash<R> {
     /// use rocket::response::{Redirect, Flash};
     ///
     /// # #[allow(unused_variables)]
-    /// let msg = Flash::success(Redirect::to("/"), "It worked!");
+    /// let message = Flash::success(Redirect::to("/"), "It worked!");
     /// ```
-    pub fn success<S: AsRef<str>>(responder: R, msg: S) -> Flash<R> {
-        Flash::new(responder, "success", msg)
+    pub fn success<S: Into<String>>(responder: R, message: S) -> Flash<R> {
+        Flash::new(responder, "success", message.into())
     }
 
     /// Constructs a "warning" `Flash` message with the given `responder` and
-    /// `msg`.
+    /// `message`.
     ///
     /// # Examples
     ///
@@ -153,14 +150,14 @@ impl<R> Flash<R> {
     /// use rocket::response::{Redirect, Flash};
     ///
     /// # #[allow(unused_variables)]
-    /// let msg = Flash::warning(Redirect::to("/"), "Watch out!");
+    /// let message = Flash::warning(Redirect::to("/"), "Watch out!");
     /// ```
-    pub fn warning<S: AsRef<str>>(responder: R, msg: S) -> Flash<R> {
-        Flash::new(responder, "warning", msg)
+    pub fn warning<S: Into<String>>(responder: R, message: S) -> Flash<R> {
+        Flash::new(responder, "warning", message.into())
     }
 
     /// Constructs an "error" `Flash` message with the given `responder` and
-    /// `msg`.
+    /// `message`.
     ///
     /// # Examples
     ///
@@ -171,15 +168,15 @@ impl<R> Flash<R> {
     /// use rocket::response::{Redirect, Flash};
     ///
     /// # #[allow(unused_variables)]
-    /// let msg = Flash::error(Redirect::to("/"), "Whoops!");
+    /// let message = Flash::error(Redirect::to("/"), "Whoops!");
     /// ```
-    pub fn error<S: AsRef<str>>(responder: R, msg: S) -> Flash<R> {
-        Flash::new(responder, "error", msg)
+    pub fn error<S: Into<String>>(responder: R, message: S) -> Flash<R> {
+        Flash::new(responder, "error", message.into())
     }
 
     fn cookie(&self) -> Cookie<'static> {
         let content = format!("{}{}{}{}",
-            self.name.len(), FLASH_COOKIE_DELIM, self.name, self.message);
+            self.kind.len(), FLASH_COOKIE_DELIM, self.kind, self.message);
 
         Cookie::build(FLASH_COOKIE_NAME, content)
             .max_age(Duration::minutes(5))
@@ -193,21 +190,20 @@ impl<R> Flash<R> {
 /// the response is the `Outcome` of the wrapped `Responder`.
 impl<'r, 'o: 'r, R: Responder<'r, 'o>> Responder<'r, 'o> for Flash<R> {
     fn respond_to(self, req: &'r Request<'_>) -> response::Result<'o> {
-        trace_!("Flash: setting message: {}:{}", self.name, self.message);
         req.cookies().add(self.cookie());
         self.inner.respond_to(req)
     }
 }
 
-impl<'a, 'r> Flash<&'a Request<'r>> {
+impl<'r> FlashMessage<'r> {
     /// Constructs a new message with the given name and message for the given
     /// request.
-    fn named(name: &str, msg: &str, req: &'a Request<'r>) -> Flash<&'a Request<'r>> {
+    fn named<S: Into<String>>(kind: S, message: S, req: &'r Request<'_>) -> Self {
         Flash {
-            name: name.to_string(),
-            message: msg.to_string(),
+            kind: kind.into(),
+            message: message.into(),
             consumed: AtomicBool::new(false),
-            inner: req,
+            inner: req.cookies(),
         }
     }
 
@@ -215,18 +211,24 @@ impl<'a, 'r> Flash<&'a Request<'r>> {
     fn clear_cookie_if_needed(&self) {
         // Remove the cookie if it hasn't already been removed.
         if !self.consumed.swap(true, Ordering::Relaxed) {
-            self.inner.cookies().remove(Cookie::named(FLASH_COOKIE_NAME));
+            self.inner.remove(Cookie::named(FLASH_COOKIE_NAME));
         }
     }
 
-    /// Returns the `name` of this message.
-    pub fn name(&self) -> &str {
+    /// Returns a tuple of `(kind, message)`, consuming `self`.
+    pub fn into_inner(self) -> (String, String) {
         self.clear_cookie_if_needed();
-        &self.name
+        (self.kind, self.message)
     }
 
-    /// Returns the `msg` contents of this message.
-    pub fn msg(&self) -> &str {
+    /// Returns the `kind` of this message.
+    pub fn kind(&self) -> &str {
+        self.clear_cookie_if_needed();
+        &self.kind
+    }
+
+    /// Returns the `message` contents of this message.
+    pub fn message(&self) -> &str {
         self.clear_cookie_if_needed();
         &self.message
     }
@@ -238,10 +240,10 @@ impl<'a, 'r> Flash<&'a Request<'r>> {
 /// The suggested use is through an `Option` and the `FlashMessage` type alias
 /// in `request`: `Option<FlashMessage>`.
 #[crate::async_trait]
-impl<'a, 'r> FromRequest<'a, 'r> for Flash<&'a Request<'r>> {
+impl<'r> FromRequest<'r> for FlashMessage<'r> {
     type Error = ();
 
-    async fn from_request(req: &'a Request<'r>) -> request::Outcome<Self, Self::Error> {
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         trace_!("Flash: attempting to retrieve message.");
         req.cookies().get(FLASH_COOKIE_NAME).ok_or(()).and_then(|cookie| {
             trace_!("Flash: retrieving message: {:?}", cookie);
@@ -261,11 +263,11 @@ impl<'a, 'r> FromRequest<'a, 'r> for Flash<&'a Request<'r>> {
     }
 }
 
-impl<R> Serialize for Flash<R> {
+impl Serialize for FlashMessage<'_> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let mut flash = ser.serialize_struct("Flash", 2)?;
-        flash.serialize_field("name", &self.name)?;
-        flash.serialize_field("message", &self.message)?;
+        flash.serialize_field("kind", self.kind())?;
+        flash.serialize_field("message", self.message())?;
         flash.end()
     }
 }

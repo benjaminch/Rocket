@@ -1,10 +1,10 @@
 use rocket;
 
 use rocket::{get, routes};
-use rocket::request::{Form, FromForm, FromFormValue};
+use rocket::form::{FromForm, FromFormField};
 use rocket::response::Responder;
 
-#[derive(FromFormValue)]
+#[derive(FromFormField)]
 enum Thing {
     A,
     B,
@@ -37,7 +37,7 @@ fn index() -> DerivedResponder {
 }
 
 #[get("/?<params..>")]
-fn number(params: Form<ThingForm>) -> DerivedResponder {
+fn number(params: ThingForm) -> DerivedResponder {
     DerivedResponder { data: params.thing.to_string() }
 }
 
@@ -45,8 +45,7 @@ fn number(params: Form<ThingForm>) -> DerivedResponder {
 fn test_derive_reexports() {
     use rocket::local::blocking::Client;
 
-    let rocket = rocket::ignite().mount("/", routes![index, number]);
-    let client = Client::tracked(rocket).unwrap();
+    let client = Client::debug_with(routes![index, number]).unwrap();
 
     let response = client.get("/").dispatch();
     assert_eq!(response.into_string().unwrap(), "hello");

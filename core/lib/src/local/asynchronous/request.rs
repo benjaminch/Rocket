@@ -1,7 +1,9 @@
-use std::borrow::Cow;
+use std::fmt;
+use std::convert::TryInto;
 
 use crate::{Request, Data};
-use crate::http::{Status, Method, uri::Origin, ext::IntoOwned};
+use crate::http::{Status, Method};
+use crate::http::uri::Origin;
 
 use super::{Client, LocalResponse};
 
@@ -14,12 +16,12 @@ use super::{Client, LocalResponse};
 /// The following snippet uses the available builder methods to construct and
 /// dispatch a `POST` request to `/` with a JSON body:
 ///
-/// ```rust
+/// ```rust,no_run
 /// use rocket::local::asynchronous::{Client, LocalRequest};
 /// use rocket::http::{ContentType, Cookie};
 ///
 /// # rocket::async_test(async {
-/// let client = Client::tracked(rocket::ignite()).await.expect("valid rocket");
+/// let client = Client::tracked(rocket::build()).await.expect("valid rocket");
 /// let req = client.post("/")
 ///     .header(ContentType::JSON)
 ///     .remote("127.0.0.1:8000".parse().unwrap())
@@ -33,19 +35,22 @@ pub struct LocalRequest<'c> {
     pub(in super) client: &'c Client,
     pub(in super) request: Request<'c>,
     data: Vec<u8>,
-    uri: Cow<'c, str>,
+    // The `Origin` on the right is INVALID! It should _not_ be used!
+    uri: Result<Origin<'c>, Origin<'static>>,
 }
 
 impl<'c> LocalRequest<'c> {
-    pub(crate) fn new(
-        client: &'c Client,
-        method: Method,
-        uri: Cow<'c, str>
-    ) -> LocalRequest<'c> {
-        // We try to validate the URI now so that the inner `Request` contains a
-        // valid URI. If it doesn't, we set a dummy one.
-        let origin = Origin::parse(&uri).unwrap_or_else(|_| Origin::dummy());
-        let mut request = Request::new(client.rocket(), method, origin.into_owned());
+    pub(crate) fn new<'u: 'c, U>(client: &'c Client, method: Method, uri: U) -> Self
+        where U: TryInto<Origin<'u>> + fmt::Display
+    {
+        // Try to parse `uri` into an `Origin`, storing whether it's good.
+        let uri_str = uri.to_string();
+        let try_origin = uri.try_into()
+            .map_err(|_| Origin::new::<_, &'static str>(uri_str, None));
+
+        // Create a request. We'll handle bad URIs later, in `_dispatch`.
+        let origin = try_origin.clone().unwrap_or_else(|bad| bad);
+        let mut request = Request::new(client.rocket(), method, origin);
 
         // Add any cookies we know about.
         if client.tracked {
@@ -56,7 +61,7 @@ impl<'c> LocalRequest<'c> {
             })
         }
 
-        LocalRequest { client, request, uri, data: vec![] }
+        LocalRequest { client, request, uri: try_origin, data: vec![] }
     }
 
     pub(crate) fn _request(&self) -> &Request<'c> {
@@ -75,13 +80,17 @@ impl<'c> LocalRequest<'c> {
     async fn _dispatch(mut self) -> LocalResponse<'c> {
         // First, revalidate the URI, returning an error response (generated
         // from an error catcher) immediately if it's invalid. If it's valid,
-        // then `request` already contains the correct URI.
+        // then `request` already contains a correct URI.
         let rocket = self.client.rocket();
-        if let Err(_) = Origin::parse(&self.uri) {
-            error!("Malformed request URI: {}", self.uri);
-            return LocalResponse::new(self.request, move |req| {
-                rocket.handle_error(Status::BadRequest, req)
-            }).await
+        if let Err(ref invalid) = self.uri {
+            // The user may have changed the URI in the request in which case we
+            // _shouldn't_ error. Check that now and error only if not.
+            if self.inner().uri() == invalid {
+                error!("invalid request URI: {:?}", invalid.path());
+                return LocalResponse::new(self.request, move |req| {
+                    rocket.handle_error(Status::BadRequest, req)
+                }).await
+            }
         }
 
         // Actually dispatch the request.
@@ -97,7 +106,7 @@ impl<'c> LocalRequest<'c> {
             self.client._with_raw_cookies_mut(|jar| {
                 let current_time = time::OffsetDateTime::now_utc();
                 for cookie in response.cookies().iter() {
-                    if let Some(expires) = cookie.expires() {
+                    if let Some(expires) = cookie.expires_datetime() {
                         if expires <= current_time {
                             jar.force_remove(cookie);
                             continue;
@@ -112,7 +121,7 @@ impl<'c> LocalRequest<'c> {
         response
     }
 
-    pub_request_impl!("# use rocket::local::asynchronous::Client;
+    pub_request_impl!("# use rocket::local::asynchronous::Client;\n\
         use rocket::local::asynchronous::LocalRequest;" async await);
 }
 
@@ -130,5 +139,19 @@ impl<'c> Clone for LocalRequest<'c> {
 impl std::fmt::Debug for LocalRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self._request().fmt(f)
+    }
+}
+
+impl<'c> std::ops::Deref for LocalRequest<'c> {
+    type Target = Request<'c>;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
+
+impl<'c> std::ops::DerefMut for LocalRequest<'c> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner_mut()
     }
 }

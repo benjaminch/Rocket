@@ -2,33 +2,67 @@ use std::io;
 use std::sync::Arc;
 
 use futures::stream::StreamExt;
-use futures::future::{Future, BoxFuture};
+use futures::future::{self, FutureExt, Future, TryFutureExt, BoxFuture};
 use tokio::sync::oneshot;
 use yansi::Paint;
 
-use crate::Rocket;
-use crate::handler;
-use crate::request::{Request, FormItems};
-use crate::data::Data;
-use crate::response::{Body, Response};
+use crate::{Rocket, Orbit, Request, Data, route};
+use crate::form::Form;
+use crate::response::{Response, Body};
 use crate::outcome::Outcome;
 use crate::error::{Error, ErrorKind};
-use crate::logger::PaintExt;
 use crate::ext::AsyncReadExt;
 
 use crate::http::{Method, Status, Header, hyper};
 use crate::http::private::{Listener, Connection, Incoming};
 use crate::http::uri::Origin;
+use crate::http::private::bind_tcp;
 
 // A token returned to force the execution of one method before another.
-pub(crate) struct Token;
+pub(crate) struct RequestToken;
+
+async fn handle<Fut, T, F>(name: Option<&str>, run: F) -> Option<T>
+    where F: FnOnce() -> Fut, Fut: Future<Output = T>,
+{
+    use std::panic::AssertUnwindSafe;
+
+    macro_rules! panic_info {
+        ($name:expr, $e:expr) => {{
+            match $name {
+                Some(name) => error_!("Handler {} panicked.", Paint::white(name)),
+                None => error_!("A handler panicked.")
+            };
+
+            info_!("This is an application bug.");
+            info_!("A panic in Rust must be treated as an exceptional event.");
+            info_!("Panicking is not a suitable error handling mechanism.");
+            info_!("Unwinding, the result of a panic, is an expensive operation.");
+            info_!("Panics will severely degrade application performance.");
+            info_!("Instead of panicking, return `Option` and/or `Result`.");
+            info_!("Values of either type can be returned directly from handlers.");
+            warn_!("A panic is treated as an internal server error.");
+            $e
+        }}
+    }
+
+    let run = AssertUnwindSafe(run);
+    let fut = std::panic::catch_unwind(move || run())
+        .map_err(|e| panic_info!(name, e))
+        .ok()?;
+
+    AssertUnwindSafe(fut)
+        .catch_unwind()
+        .await
+        .map_err(|e| panic_info!(name, e))
+        .ok()
+}
 
 // This function tries to hide all of the Hyper-ness from Rocket. It essentially
 // converts Hyper types into Rocket types, then calls the `dispatch` function,
 // which knows nothing about Hyper. Because responding depends on the
 // `HyperResponse` type, this function does the actual response processing.
 async fn hyper_service_fn(
-    rocket: Arc<Rocket>,
+    rocket: Arc<Rocket<Orbit>>,
     h_addr: std::net::SocketAddr,
     hyp_req: hyper::Request<hyper::Body>,
 ) -> Result<hyper::Response<hyper::Body>, io::Error> {
@@ -61,7 +95,7 @@ async fn hyper_service_fn(
         };
 
         // Retrieve the data from the hyper body.
-        let mut data = Data::from_hyp(h_body).await;
+        let mut data = Data::from(h_body);
 
         // Dispatch the request to get a response, then write that response out.
         let token = rocket.preprocess_request(&mut req, &mut data).await;
@@ -73,7 +107,7 @@ async fn hyper_service_fn(
     rx.await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
-impl Rocket {
+impl Rocket<Orbit> {
     /// Wrapper around `make_response` to log a success or failure.
     #[inline]
     async fn send_response(
@@ -152,7 +186,7 @@ impl Rocket {
         &self,
         req: &mut Request<'_>,
         data: &mut Data
-    ) -> Token {
+    ) -> RequestToken {
         // Check if this is a form and if the form contains the special _method
         // field which we use to reinterpret the request's method.
         let (min_len, max_len) = ("_method=get".len(), "_method=delete".len());
@@ -160,28 +194,26 @@ impl Rocket {
         let is_form = req.content_type().map_or(false, |ct| ct.is_form());
 
         if is_form && req.method() == Method::Post && peek_buffer.len() >= min_len {
-            if let Ok(form) = std::str::from_utf8(peek_buffer) {
-                let method: Option<Result<Method, _>> = FormItems::from(form)
-                    .filter(|item| item.key.as_str() == "_method")
-                    .map(|item| item.value.parse())
-                    .next();
+            let method = std::str::from_utf8(peek_buffer).ok()
+                .and_then(|raw_form| Form::values(raw_form).next())
+                .filter(|field| field.name == "_method")
+                .and_then(|field| field.value.parse().ok());
 
-                if let Some(Ok(method)) = method {
-                    req._set_method(method);
-                }
+            if let Some(method) = method {
+                req._set_method(method);
             }
         }
 
         // Run request fairings.
         self.fairings.handle_request(req, data).await;
 
-        Token
+        RequestToken
     }
 
     #[inline]
     pub(crate) async fn dispatch<'s, 'r: 's>(
         &'s self,
-        _token: Token,
+        _token: RequestToken,
         request: &'r Request<'s>,
         data: Data
     ) -> Response<'r> {
@@ -210,44 +242,36 @@ impl Rocket {
         response
     }
 
-    /// Route the request and process the outcome to eventually get a response.
-    fn route_and_process<'s, 'r: 's>(
+    async fn route_and_process<'s, 'r: 's>(
         &'s self,
         request: &'r Request<'s>,
         data: Data
-    ) -> impl Future<Output = Response<'r>> + Send + 's {
-        async move {
-            let mut response = match self.route(request, data).await {
-                Outcome::Success(response) => response,
-                Outcome::Forward(data) => {
-                    // There was no matching route. Autohandle `HEAD` requests.
-                    if request.method() == Method::Head {
-                        info_!("Autohandling {} request.", Paint::default("HEAD").bold());
+    ) -> Response<'r> {
+        let mut response = match self.route(request, data).await {
+            Outcome::Success(response) => response,
+            Outcome::Forward(data) if request.method() == Method::Head => {
+                info_!("Autohandling {} request.", Paint::default("HEAD").bold());
 
-                        // Dispatch the request again with Method `GET`.
-                        request._set_method(Method::Get);
-
-                        // Return early so we don't set cookies twice.
-                        let try_next: BoxFuture<'_, _> =
-                            Box::pin(self.route_and_process(request, data));
-                        return try_next.await;
-                    } else {
-                        // No match was found and it can't be autohandled. 404.
-                        self.handle_error(Status::NotFound, request).await
-                    }
+                // Dispatch the request again with Method `GET`.
+                request._set_method(Method::Get);
+                match self.route(request, data).await {
+                    Outcome::Success(response) => response,
+                    Outcome::Failure(status) => self.handle_error(status, request).await,
+                    Outcome::Forward(_) => self.handle_error(Status::NotFound, request).await,
                 }
-                Outcome::Failure(status) => self.handle_error(status, request).await,
-            };
-
-            // Set the cookies. Note that error responses will only include
-            // cookies set by the error handler. See `handle_error` for more.
-            let delta_jar = request.cookies().take_delta_jar();
-            for cookie in delta_jar.delta() {
-                response.adjoin_header(cookie);
             }
+            Outcome::Forward(_) => self.handle_error(Status::NotFound, request).await,
+            Outcome::Failure(status) => self.handle_error(status, request).await,
+        };
 
-            response
+        // Set the cookies. Note that error responses will only include cookies
+        // set by the error handler. See `handle_error` for more.
+        let delta_jar = request.cookies().take_delta_jar();
+        for cookie in delta_jar.delta() {
+            response.adjoin_header(cookie);
         }
+
+        response
     }
 
     /// Tries to find a `Responder` for a given `request`. It does this by
@@ -256,107 +280,133 @@ impl Rocket {
     /// additional routes to try (forward). The corresponding outcome for each
     /// condition is returned.
     #[inline]
-    fn route<'s, 'r: 's>(
+    async fn route<'s, 'r: 's>(
         &'s self,
         request: &'r Request<'s>,
         mut data: Data,
-    ) -> impl Future<Output = handler::Outcome<'r>> + 's {
-        async move {
-            // Go through the list of matching routes until we fail or succeed.
-            let matches = self.router.route(request);
-            for route in matches {
-                // Retrieve and set the requests parameters.
-                info_!("Matched: {}", route);
-                request.set_route(route);
+    ) -> route::Outcome<'r> {
+        // Go through the list of matching routes until we fail or succeed.
+        for route in self.router.route(request) {
+            // Retrieve and set the requests parameters.
+            info_!("Matched: {}", route);
+            request.set_route(route);
 
-                // Dispatch the request to the handler.
-                let outcome = route.handler.handle(request, data).await;
+            let name = route.name.as_deref();
+            let outcome = handle(name, || route.handler.handle(request, data)).await
+                .unwrap_or_else(|| Outcome::Failure(Status::InternalServerError));
 
-                // Check if the request processing completed (Some) or if the
-                // request needs to be forwarded. If it does, continue the loop
-                // (None) to try again.
-                info_!("{} {}", Paint::default("Outcome:").bold(), outcome);
-                match outcome {
-                    o@Outcome::Success(_) | o@Outcome::Failure(_) => return o,
-                    Outcome::Forward(unused_data) => data = unused_data,
-                }
+            // Check if the request processing completed (Some) or if the
+            // request needs to be forwarded. If it does, continue the loop
+            // (None) to try again.
+            info_!("{} {}", Paint::default("Outcome:").bold(), outcome);
+            match outcome {
+                o@Outcome::Success(_) | o@Outcome::Failure(_) => return o,
+                Outcome::Forward(unused_data) => data = unused_data,
             }
-
-            error_!("No matching routes for {}.", request);
-            Outcome::Forward(data)
         }
+
+        error_!("No matching routes for {}.", request);
+        Outcome::Forward(data)
     }
 
-    // Finds the error catcher for the status `status` and executes it for the
-    // given request `req`. If a user has registered a catcher for `status`, the
-    // catcher is called. If the catcher fails to return a good response, the
-    // 500 catcher is executed. If there is no registered catcher for `status`,
-    // the default catcher is used.
-    pub(crate) fn handle_error<'s, 'r: 's>(
+    /// Invokes the handler with `req` for catcher with status `status`.
+    ///
+    /// In order of preference, invoked handler is:
+    ///   * the user's registered handler for `status`
+    ///   * the user's registered `default` handler
+    ///   * Rocket's default handler for `status`
+    ///
+    /// Return `Ok(result)` if the handler succeeded. Returns `Ok(Some(Status))`
+    /// if the handler ran to completion but failed. Returns `Ok(None)` if the
+    /// handler panicked while executing.
+    async fn invoke_catcher<'s, 'r: 's>(
         &'s self,
         status: Status,
         req: &'r Request<'s>
-    ) -> impl Future<Output = Response<'r>> + 's {
-        async move {
-            warn_!("Responding with {} catcher.", Paint::red(&status));
+    ) -> Result<Response<'r>, Option<Status>> {
+        // For now, we reset the delta state to prevent any modifications
+        // from earlier, unsuccessful paths from being reflected in error
+        // response. We may wish to relax this in the future.
+        req.cookies().reset_delta();
 
-            // For now, we reset the delta state to prevent any modifications
-            // from earlier, unsuccessful paths from being reflected in error
-            // response. We may wish to relax this in the future.
-            req.cookies().reset_delta();
-
-            // Try to get the active catcher but fallback to user's 500 catcher.
-            let code = Paint::red(status.code);
-            let response = if let Some(catcher) = self.catchers.get(&status.code) {
-                catcher.handler.handle(status, req).await
-            } else if let Some(ref default) =  self.default_catcher {
-                warn_!("No {} catcher found. Using default catcher.", code);
-                default.handler.handle(status, req).await
-            } else {
-                warn_!("No {} or default catcher found. Using Rocket default catcher.", code);
-                crate::catcher::default(status, req)
-            };
-
-            // Dispatch to the catcher. If it fails, use the Rocket default 500.
-            match response {
-                Ok(r) => r,
-                Err(err_status) => {
-                    error_!("Catcher unexpectedly failed with {}.", err_status);
-                    warn_!("Using Rocket's default 500 error catcher.");
-                    let default = crate::catcher::default(Status::InternalServerError, req);
-                    default.expect("Rocket has default 500 response")
-                }
-            }
+        if let Some(catcher) = self.router.catch(status, req) {
+            warn_!("Responding with registered {} catcher.", catcher);
+            let name = catcher.name.as_deref();
+            handle(name, || catcher.handler.handle(status, req)).await
+                .map(|result| result.map_err(Some))
+                .unwrap_or_else(|| Err(None))
+        } else {
+            let code = Paint::blue(status.code).bold();
+            warn_!("No {} catcher registered. Using Rocket default.", code);
+            Ok(crate::catcher::default_handler(status, req))
         }
     }
 
-    // TODO.async: Solidify the Listener APIs and make this function public
-    pub(crate) async fn listen_on<L>(mut self, listener: L) -> Result<(), Error>
-        where L: Listener + Send + Unpin + 'static,
-              <L as Listener>::Connection: Send + Unpin + 'static,
+    // Invokes the catcher for `status`. Returns the response on success.
+    //
+    // On catcher failure, the 500 error catcher is attempted. If _that_ fails,
+    // the (infallible) default 500 error cather is used.
+    pub(crate) async fn handle_error<'s, 'r: 's>(
+        &'s self,
+        mut status: Status,
+        req: &'r Request<'s>
+    ) -> Response<'r> {
+        // Dispatch to the `status` catcher.
+        if let Ok(r) = self.invoke_catcher(status, req).await {
+            return r;
+        }
+
+        // If it fails and it's not a 500, try the 500 catcher.
+        if status != Status::InternalServerError {
+            error_!("Catcher failed. Attemping 500 error catcher.");
+            status = Status::InternalServerError;
+            if let Ok(r) = self.invoke_catcher(status, req).await {
+                return r;
+            }
+        }
+
+        // If it failed again or if it was already a 500, use Rocket's default.
+        error_!("{} catcher failed. Using Rocket default 500.", status.code);
+        crate::catcher::default_handler(Status::InternalServerError, req)
+    }
+
+    pub(crate) async fn default_tcp_http_server<C>(mut self, ready: C) -> Result<(), Error>
+        where C: for<'a> Fn(&'a Self) -> BoxFuture<'a, ()>
     {
-        // We do this twice if `listen_on` was called through `launch()` but
-        // only once if `listen_on()` gets called directly.
-        self.prelaunch_check().await?;
+        use std::net::ToSocketAddrs;
 
-        // Freeze managed state for synchronization-free accesses later.
-        self.managed_state.freeze();
+        // Determine the address we're going to serve on.
+        let addr = format!("{}:{}", self.config.address, self.config.port);
+        let mut addr = addr.to_socket_addrs()
+            .map(|mut addrs| addrs.next().expect(">= 1 socket addr"))
+            .map_err(|e| Error::new(ErrorKind::Io(e)))?;
 
-        // Determine the address and port we actually bound to.
-        self.config.port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-        let proto = self.config.tls.as_ref().map_or("http://", |_| "https://");
-        let full_addr = format!("{}:{}", self.config.address, self.config.port);
+        #[cfg(feature = "tls")]
+        if let Some(ref config) = self.config.tls {
+            use crate::http::private::tls::bind_tls;
 
-        // Run the launch fairings.
-        self.fairings.pretty_print_counts();
-        self.fairings.handle_launch(&self);
+            let (certs, key) = config.to_readers().map_err(ErrorKind::Io)?;
+            let l = bind_tls(addr, certs, key).await.map_err(ErrorKind::Bind)?;
+            addr = l.local_addr().unwrap_or(addr);
+            self.config.address = addr.ip();
+            self.config.port = addr.port();
+            ready(&mut self).await;
+            return self.http_server(l).await;
+        }
 
-        launch_info!("{}{} {}{}",
-                     Paint::emoji("🚀 "),
-                     Paint::default("Rocket has launched from").bold(),
-                     Paint::default(proto).bold().underline(),
-                     Paint::default(&full_addr).bold().underline());
+        let l = bind_tcp(addr).await.map_err(ErrorKind::Bind)?;
+        addr = l.local_addr().unwrap_or(addr);
+        self.config.address = addr.ip();
+        self.config.port = addr.port();
+        ready(&mut self).await;
+        self.http_server(l).await
+    }
 
+    // TODO.async: Solidify the Listener APIs and make this function public
+    pub(crate) async fn http_server<L>(self, listener: L) -> Result<(), Error>
+        where L: Listener + Send + Unpin + 'static,
+              <L as Listener>::Connection: Send + Unpin + 'static
+    {
         // Determine keep-alives.
         let http1_keepalive = self.config.keep_alive != 0;
         let http2_keep_alive = match self.config.keep_alive {
@@ -364,9 +414,12 @@ impl Rocket {
             n => Some(std::time::Duration::from_secs(n as u64))
         };
 
-        // We need to get this before moving `self` into an `Arc`.
-        let mut shutdown_receiver = self.shutdown_receiver.take()
-            .expect("shutdown receiver has already been used");
+        // Get the shutdown handle (to initiate) and signal (when initiated).
+        let shutdown_handle = self.shutdown.clone();
+        let shutdown_signal = match self.config.ctrlc {
+            true => tokio::signal::ctrl_c().boxed(),
+            false => future::pending().boxed(),
+        };
 
         let rocket = Arc::new(self);
         let service = hyper::make_service_fn(move |conn: &<L as Listener>::Connection| {
@@ -380,12 +433,31 @@ impl Rocket {
         });
 
         // NOTE: `hyper` uses `tokio::spawn()` as the default executor.
-        hyper::Server::builder(Incoming::from_listener(listener))
+        let shutdown_receiver = shutdown_handle.clone();
+        let server = hyper::Server::builder(Incoming::from_listener(listener))
             .http1_keepalive(http1_keepalive)
             .http2_keep_alive_interval(http2_keep_alive)
             .serve(service)
-            .with_graceful_shutdown(async move { shutdown_receiver.recv().await; })
-            .await
-            .map_err(|e| Error::new(ErrorKind::Runtime(Box::new(e))))
+            .with_graceful_shutdown(async move { shutdown_receiver.notified().await; })
+            .map_err(|e| Error::new(ErrorKind::Runtime(Box::new(e))));
+
+        tokio::pin!(server);
+
+        let selecter = future::select(shutdown_signal, server);
+        match selecter.await {
+            future::Either::Left((Ok(()), server)) => {
+                // Ctrl-was pressed. Signal shutdown, wait for the server.
+                shutdown_handle.notify_one();
+                server.await
+            }
+            future::Either::Left((Err(err), server)) => {
+                // Error setting up ctrl-c signal. Let the user know.
+                warn!("Failed to enable `ctrl-c` graceful signal shutdown.");
+                info_!("Error: {}", err);
+                server.await
+            }
+            // Server shut down before Ctrl-C; return the result.
+            future::Either::Right((result, _)) => result,
+        }
     }
 }

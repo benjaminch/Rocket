@@ -1,10 +1,67 @@
-use super::Route;
+use crate::catcher::Catcher;
+use crate::route::{Route, Color};
 
-use crate::http::MediaType;
-use crate::http::route::Kind;
+use crate::http::{MediaType, Status};
 use crate::request::Request;
 
-impl Route {
+pub trait Collide<T = Self> {
+    fn collides_with(&self, other: &T) -> bool;
+}
+
+impl<'a, 'b, T: Collide> Collide<&T> for &T {
+    fn collides_with(&self, other: &&T) -> bool {
+        T::collides_with(*self, *other)
+    }
+}
+
+impl Collide for MediaType {
+    fn collides_with(&self, other: &Self) -> bool {
+        let collide = |a, b| a == "*" || b == "*" || a == b;
+        collide(self.top(), other.top()) && collide(self.sub(), other.sub())
+    }
+}
+
+fn paths_collide(route: &Route, other: &Route) -> bool {
+    let a_segments = &route.uri.metadata.path_segs;
+    let b_segments = &other.uri.metadata.path_segs;
+    for (seg_a, seg_b) in a_segments.iter().zip(b_segments.iter()) {
+        if seg_a.trailing || seg_b.trailing {
+            return true;
+        }
+
+        if seg_a.dynamic || seg_b.dynamic {
+            continue;
+        }
+
+        if seg_a.value != seg_b.value {
+            return false;
+        }
+    }
+
+    a_segments.get(b_segments.len()).map_or(false, |s| s.trailing)
+        || b_segments.get(a_segments.len()).map_or(false, |s| s.trailing)
+        || a_segments.len() == b_segments.len()
+}
+
+fn formats_collide(route: &Route, other: &Route) -> bool {
+    // When matching against the `Accept` header, the client can always provide
+    // a media type that will cause a collision through non-specificity, i.e,
+    // `*/*` matches everything.
+    if !route.method.supports_payload() {
+        return true;
+    }
+
+    // When matching against the `Content-Type` header, we'll only consider
+    // requests as having a `Content-Type` if they're fully specified. If a
+    // route doesn't have a `format`, it accepts all `Content-Type`s. If a
+    // request doesn't have a format, it only matches routes without a format.
+    match (route.format.as_ref(), other.format.as_ref()) {
+        (Some(a), Some(b)) => a.collides_with(b),
+        _ => true
+    }
+}
+
+impl Collide for Route {
     /// Determines if two routes can match against some request. That is, if two
     /// routes `collide`, there exists a request that can match against both
     /// routes.
@@ -17,16 +74,18 @@ impl Route {
     ///
     /// Because query parsing is lenient, and dynamic query parameters can be
     /// missing, queries do not impact whether two routes collide.
-    #[doc(hidden)]
-    pub fn collides_with(&self, other: &Route) -> bool {
+    fn collides_with(&self, other: &Route) -> bool {
         self.method == other.method
             && self.rank == other.rank
             && paths_collide(self, other)
             && formats_collide(self, other)
     }
+}
 
-    /// Determines if this route matches against the given request. This means
-    /// that:
+impl Route {
+    /// Determines if this route matches against the given request.
+    ///
+    /// This means that:
     ///
     ///   * The route's method matches that of the incoming request.
     ///   * The route's format (if any) matches that of the incoming request.
@@ -35,10 +94,9 @@ impl Route {
     ///   * All static components in the route's path match the corresponding
     ///     components in the same position in the incoming request.
     ///   * All static components in the route's query string are also in the
-    ///     request query string, though in any position.
-    ///     - If no query in route, requests with/without queries match.
-    #[doc(hidden)]
-    pub fn matches(&self, req: &Request<'_>) -> bool {
+    ///     request query string, though in any position. If there is no query
+    ///     in the route, requests with/without queries match.
+    pub(crate) fn matches(&self, req: &Request<'_>) -> bool {
         self.method == req.method()
             && paths_match(self, req)
             && queries_match(self, req)
@@ -46,96 +104,66 @@ impl Route {
     }
 }
 
-fn paths_collide(route: &Route, other: &Route) -> bool {
-    let a_segments = &route.metadata.path_segments;
-    let b_segments = &other.metadata.path_segments;
-    for (seg_a, seg_b) in a_segments.iter().zip(b_segments.iter()) {
-        if seg_a.kind == Kind::Multi || seg_b.kind == Kind::Multi {
-            return true;
+fn paths_match(route: &Route, req: &Request<'_>) -> bool {
+    let route_segments = &route.uri.metadata.path_segs;
+    let req_segments = req.uri().path_segments();
+
+    if route.uri.metadata.trailing_path {
+        // The last route segment can be trailing, which is allowed to be empty.
+        // So we can have one more segment in `route` than in `req` and match.
+        // ok if: req_segments.len() >= route_segments.len() - 1
+        if req_segments.len() + 1 < route_segments.len() {
+            return false;
         }
-
-        if seg_a.kind == Kind::Static && seg_b.kind == Kind::Static {
-            if seg_a.string != seg_b.string {
-                return false;
-            }
-        }
-    }
-
-    a_segments.len() == b_segments.len()
-}
-
-fn paths_match(route: &Route, request: &Request<'_>) -> bool {
-    let route_segments = &route.metadata.path_segments;
-    if route_segments.len() > request.state.path_segments.len() {
+    } else if route_segments.len() != req_segments.len() {
         return false;
     }
 
-    let request_segments = request.raw_path_segments();
-    for (route_seg, req_seg) in route_segments.iter().zip(request_segments) {
-        match route_seg.kind {
-            Kind::Multi => return true,
-            Kind::Static if &*route_seg.string != req_seg.as_str() => return false,
-            _ => continue,
-        }
-    }
-
-    route_segments.len() == request.state.path_segments.len()
-}
-
-fn queries_match(route: &Route, request: &Request<'_>) -> bool {
-    if route.metadata.fully_dynamic_query {
+    if route.uri.metadata.path_color == Color::Wild {
         return true;
     }
 
-    let route_query_segments = match route.metadata.query_segments {
-        Some(ref segments) => segments,
-        None => return true
-    };
+    for (route_seg, req_seg) in route_segments.iter().zip(req_segments) {
+        if route_seg.trailing {
+            return true;
+        }
 
-    let req_query_segments = match request.raw_query_items() {
-        Some(iter) => iter.map(|item| item.raw.as_str()),
-        None => return route.metadata.fully_dynamic_query
-    };
-
-    for seg in route_query_segments.iter() {
-        if seg.kind == Kind::Static {
-            // it's okay; this clones the iterator
-            if !req_query_segments.clone().any(|r| r == seg.string) {
-                return false;
-            }
+        if !(route_seg.dynamic || route_seg.value == req_seg) {
+            return false;
         }
     }
 
     true
 }
 
-fn formats_collide(route: &Route, other: &Route) -> bool {
-    // When matching against the `Accept` header, the client can always provide
-    // a media type that will cause a collision through non-specificity.
-    if !route.method.supports_payload() {
+fn queries_match(route: &Route, req: &Request<'_>) -> bool {
+    if matches!(route.uri.metadata.query_color, None | Some(Color::Wild)) {
         return true;
     }
 
-    // When matching against the `Content-Type` header, we'll only consider
-    // requests as having a `Content-Type` if they're fully specified. If a
-    // route doesn't have a `format`, it accepts all `Content-Type`s. If a
-    // request doesn't have a format, it only matches routes without a format.
-    match (route.format.as_ref(), other.format.as_ref()) {
-        (Some(a), Some(b)) => media_types_collide(a, b),
-        _ => true
+    let route_query_fields = route.uri.metadata.static_query_fields.iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()));
+
+    for route_seg in route_query_fields {
+        if !req.uri().query_segments().any(|req_seg| req_seg == route_seg) {
+            trace_!("request {} missing static query {:?}", req, route_seg);
+            return false;
+        }
     }
+
+    true
 }
 
 fn formats_match(route: &Route, request: &Request<'_>) -> bool {
     if !route.method.supports_payload() {
         route.format.as_ref()
             .and_then(|a| request.format().map(|b| (a, b)))
-            .map(|(a, b)| media_types_collide(a, b))
+            .map(|(a, b)| a.collides_with(b))
             .unwrap_or(true)
     } else {
         match route.format.as_ref() {
             Some(a) => match request.format() {
-                Some(b) if b.specificity() == 2 => media_types_collide(a, b),
+                Some(b) if b.specificity() == 2 => a.collides_with(b),
                 _ => false
             }
             None => true
@@ -143,9 +171,30 @@ fn formats_match(route: &Route, request: &Request<'_>) -> bool {
     }
 }
 
-fn media_types_collide(first: &MediaType, other: &MediaType) -> bool {
-    let collide = |a, b| a == "*" || b == "*" || a == b;
-    collide(first.top(), other.top()) && collide(first.sub(), other.sub())
+
+impl Collide for Catcher {
+    /// Determines if two catchers are in conflict: there exists a request for
+    /// which there exist no rule to determine _which_ of the two catchers to
+    /// use. This means that the catchers:
+    ///
+    ///  * Have the same base.
+    ///  * Have the same status code or are both defaults.
+    fn collides_with(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.base.path_segments().eq(other.base.path_segments())
+    }
+}
+
+impl Catcher {
+    /// Determines if this catcher is responsible for handling the error with
+    /// `status` that occurred during request `req`. A catcher matches if:
+    ///
+    ///  * It is a default catcher _or_ has a code of `status`.
+    ///  * Its base is a prefix of the normalized/decoded `req.path()`.
+    pub(crate) fn matches(&self, status: Status, req: &Request<'_>) -> bool {
+        self.code.map_or(true, |code| code == status.code)
+            && self.base.path_segments().prefix_of(req.uri().path_segments())
+    }
 }
 
 #[cfg(test)]
@@ -153,31 +202,28 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::rocket::Rocket;
-    use crate::config::Config;
-    use crate::request::Request;
-    use crate::router::route::Route;
+    use crate::route::{Route, dummy_handler};
+    use crate::local::blocking::Client;
     use crate::http::{Method, Method::*, MediaType, ContentType, Accept};
     use crate::http::uri::Origin;
-    use crate::handler::dummy;
 
     type SimpleRoute = (Method, &'static str);
 
     fn m_collide(a: SimpleRoute, b: SimpleRoute) -> bool {
-        let route_a = Route::new(a.0, a.1, dummy);
-        route_a.collides_with(&Route::new(b.0, b.1, dummy))
+        let route_a = Route::new(a.0, a.1, dummy_handler);
+        route_a.collides_with(&Route::new(b.0, b.1, dummy_handler))
     }
 
     fn unranked_collide(a: &'static str, b: &'static str) -> bool {
-        let route_a = Route::ranked(0, Get, a, dummy);
-        let route_b = Route::ranked(0, Get, b, dummy);
+        let route_a = Route::ranked(0, Get, a, dummy_handler);
+        let route_b = Route::ranked(0, Get, b, dummy_handler);
         eprintln!("Checking {} against {}.", route_a, route_b);
         route_a.collides_with(&route_b)
     }
 
     fn s_s_collide(a: &'static str, b: &'static str) -> bool {
-        let a = Route::new(Get, a, dummy);
-        let b = Route::new(Get, b, dummy);
+        let a = Route::new(Get, a, dummy_handler);
+        let b = Route::new(Get, b, dummy_handler);
         paths_collide(&a, &b)
     }
 
@@ -192,6 +238,8 @@ mod tests {
 
     #[test]
     fn simple_param_collisions() {
+        assert!(unranked_collide("/<a>", "/<b>"));
+        assert!(unranked_collide("/<a>", "/b"));
         assert!(unranked_collide("/hello/<name>", "/hello/<person>"));
         assert!(unranked_collide("/hello/<name>/hi", "/hello/<person>/hi"));
         assert!(unranked_collide("/hello/<name>/hi/there", "/hello/<person>/hi/there"));
@@ -207,10 +255,12 @@ mod tests {
         assert!(unranked_collide("/a/<b>/<c>/<a..>", "/a/hi/hey/hayo"));
         assert!(unranked_collide("/<b>/<c>/<a..>", "/a/hi/hey/hayo"));
         assert!(unranked_collide("/<b>/<c>/hey/hayo", "/a/hi/hey/hayo"));
+        assert!(unranked_collide("/<a..>", "/foo"));
     }
 
     #[test]
     fn medium_param_collisions() {
+        assert!(unranked_collide("/<a>", "/b"));
         assert!(unranked_collide("/hello/<name>", "/hello/bob"));
         assert!(unranked_collide("/<name>", "//bob"));
     }
@@ -221,6 +271,13 @@ mod tests {
         assert!(unranked_collide("/<a..>", "//a/bcjdklfj//<c>"));
         assert!(unranked_collide("/a/<a..>", "//a/bcjdklfj//<c>"));
         assert!(unranked_collide("/a/<b>/<c..>", "//a/bcjdklfj//<c>"));
+        assert!(unranked_collide("/<a..>", "/"));
+        assert!(unranked_collide("/", "/<_..>"));
+        assert!(unranked_collide("/a/b/<a..>", "/a/<b..>"));
+        assert!(unranked_collide("/a/b/<a..>", "/a/<b>/<b..>"));
+        assert!(unranked_collide("/hi/<a..>", "/hi"));
+        assert!(unranked_collide("/hi/<a..>", "/hi/"));
+        assert!(unranked_collide("/<a..>", "//////"));
     }
 
     #[test]
@@ -248,10 +305,6 @@ mod tests {
         assert!(!unranked_collide("/hello", "/a/c"));
         assert!(!unranked_collide("/hello/there", "/hello/there/guy"));
         assert!(!unranked_collide("/a/<b>", "/b/<b>"));
-        assert!(!unranked_collide("/<a..>", "/"));
-        assert!(!unranked_collide("/hi/<a..>", "/hi"));
-        assert!(!unranked_collide("/hi/<a..>", "/hi/"));
-        assert!(!unranked_collide("/<a..>", "//////"));
         assert!(!unranked_collide("/t", "/test"));
         assert!(!unranked_collide("/a", "/aa"));
         assert!(!unranked_collide("/a", "/aaa"));
@@ -275,6 +328,7 @@ mod tests {
         assert!(!m_collide((Post, "/a"), (Put, "/")));
         assert!(!m_collide((Get, "/a"), (Put, "/")));
         assert!(!m_collide((Get, "/hello"), (Put, "/hello")));
+        assert!(!m_collide((Get, "/<foo..>"), (Post, "/")));
     }
 
     #[test]
@@ -307,19 +361,20 @@ mod tests {
         assert!(!s_s_collide("/hello", "/a/c"));
         assert!(!s_s_collide("/hello/there", "/hello/there/guy"));
         assert!(!s_s_collide("/a/<b>", "/b/<b>"));
-        assert!(!s_s_collide("/<a..>", "/"));
-        assert!(!s_s_collide("/hi/<a..>", "/hi/"));
-        assert!(!s_s_collide("/a/hi/<a..>", "/a/hi/"));
         assert!(!s_s_collide("/t", "/test"));
         assert!(!s_s_collide("/a", "/aa"));
         assert!(!s_s_collide("/a", "/aaa"));
         assert!(!s_s_collide("/", "/a"));
+
+        assert!(s_s_collide("/a/hi/<a..>", "/a/hi/"));
+        assert!(s_s_collide("/hi/<a..>", "/hi/"));
+        assert!(s_s_collide("/<a..>", "/"));
     }
 
     fn mt_mt_collide(mt1: &str, mt2: &str) -> bool {
         let mt_a = MediaType::from_str(mt1).expect(mt1);
         let mt_b = MediaType::from_str(mt2).expect(mt2);
-        media_types_collide(&mt_a, &mt_b)
+        mt_a.collides_with(&mt_b)
     }
 
     #[test]
@@ -343,12 +398,12 @@ mod tests {
     fn r_mt_mt_collide<S1, S2>(m: Method, mt1: S1, mt2: S2) -> bool
         where S1: Into<Option<&'static str>>, S2: Into<Option<&'static str>>
     {
-        let mut route_a = Route::new(m, "/", dummy);
+        let mut route_a = Route::new(m, "/", dummy_handler);
         if let Some(mt_str) = mt1.into() {
             route_a.format = Some(mt_str.parse::<MediaType>().unwrap());
         }
 
-        let mut route_b = Route::new(m, "/", dummy);
+        let mut route_b = Route::new(m, "/", dummy_handler);
         if let Some(mt_str) = mt2.into() {
             route_b.format = Some(mt_str.parse::<MediaType>().unwrap());
         }
@@ -401,8 +456,8 @@ mod tests {
     fn req_route_mt_collide<S1, S2>(m: Method, mt1: S1, mt2: S2) -> bool
         where S1: Into<Option<&'static str>>, S2: Into<Option<&'static str>>
     {
-        let rocket = Rocket::custom(Config::default());
-        let mut req = Request::new(&rocket, m, Origin::dummy());
+        let client = Client::debug_with(vec![]).expect("client");
+        let mut req = client.req(m, "/");
         if let Some(mt_str) = mt1.into() {
             if m.supports_payload() {
                 req.replace_header(mt_str.parse::<ContentType>().unwrap());
@@ -411,7 +466,7 @@ mod tests {
             }
         }
 
-        let mut route = Route::new(m, "/", dummy);
+        let mut route = Route::new(m, "/", dummy_handler);
         if let Some(mt_str) = mt2.into() {
             route.format = Some(mt_str.parse::<MediaType>().unwrap());
         }
@@ -468,9 +523,9 @@ mod tests {
     }
 
     fn req_route_path_match(a: &'static str, b: &'static str) -> bool {
-        let rocket = Rocket::custom(Config::default());
-        let req = Request::new(&rocket, Get, Origin::parse(a).expect("valid URI"));
-        let route = Route::ranked(0, Get, b.to_string(), dummy);
+        let client = Client::debug_with(vec![]).expect("client");
+        let req = client.get(Origin::parse(a).expect("valid URI"));
+        let route = Route::ranked(0, Get, b, dummy_handler);
         route.matches(&req)
     }
 
@@ -508,5 +563,38 @@ mod tests {
         assert!(!req_route_path_match("/a/b", "/a/b?foo"));
         assert!(!req_route_path_match("/a/b", "/a/b?foo&<rest..>"));
         assert!(!req_route_path_match("/a/b", "/a/b?<a>&b&<rest..>"));
+    }
+
+
+    fn catchers_collide<A, B>(a: A, ap: &str, b: B, bp: &str) -> bool
+        where A: Into<Option<u16>>, B: Into<Option<u16>>
+    {
+        use crate::catcher::dummy_handler as handler;
+
+        let a = Catcher::new(a, handler).map_base(|_| ap.into()).unwrap();
+        let b = Catcher::new(b, handler).map_base(|_| bp.into()).unwrap();
+        a.collides_with(&b)
+    }
+
+    #[test]
+    fn catcher_collisions() {
+        for path in &["/a", "/foo", "/a/b/c", "/a/b/c/d/e"] {
+            assert!(catchers_collide(404, path, 404, path));
+            assert!(catchers_collide(500, path, 500, path));
+            assert!(catchers_collide(None, path, None, path));
+        }
+    }
+
+    #[test]
+    fn catcher_non_collisions() {
+        assert!(!catchers_collide(404, "/foo", 405, "/foo"));
+        assert!(!catchers_collide(404, "/", None, "/foo"));
+        assert!(!catchers_collide(404, "/", None, "/"));
+        assert!(!catchers_collide(404, "/a/b", None, "/a/b"));
+        assert!(!catchers_collide(404, "/a/b", 404, "/a/b/c"));
+
+        assert!(!catchers_collide(None, "/a/b", None, "/a/b/c"));
+        assert!(!catchers_collide(None, "/b", None, "/a/b/c"));
+        assert!(!catchers_collide(None, "/", None, "/a/b/c"));
     }
 }

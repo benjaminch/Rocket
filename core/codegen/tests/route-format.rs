@@ -33,11 +33,11 @@ fn other() -> &'static str { "other" }
 
 #[test]
 fn test_formats() {
-    let rocket = rocket::ignite()
+    let rocket = rocket::build()
         .mount("/", routes![json, xml, json_long, msgpack_long, msgpack,
                plain, binary, other]);
 
-    let client = Client::tracked(rocket).unwrap();
+    let client = Client::debug(rocket).unwrap();
 
     let response = client.post("/").header(ContentType::JSON).dispatch();
     assert_eq!(response.into_string().unwrap(), "json");
@@ -66,24 +66,28 @@ fn test_formats() {
 
 // Test custom formats.
 
+// TODO: #[rocket(allow(unknown_format))]
 #[get("/", format = "application/foo")]
 fn get_foo() -> &'static str { "get_foo" }
 
+// TODO: #[rocket(allow(unknown_format))]
 #[post("/", format = "application/foo")]
 fn post_foo() -> &'static str { "post_foo" }
 
+// TODO: #[rocket(allow(unknown_format))]
 #[get("/", format = "bar/baz", rank = 2)]
 fn get_bar_baz() -> &'static str { "get_bar_baz" }
 
+// TODO: #[rocket(allow(unknown_format))]
 #[put("/", format = "bar/baz")]
 fn put_bar_baz() -> &'static str { "put_bar_baz" }
 
 #[test]
 fn test_custom_formats() {
-    let rocket = rocket::ignite()
+    let rocket = rocket::build()
         .mount("/", routes![get_foo, post_foo, get_bar_baz, put_bar_baz]);
 
-    let client = Client::tracked(rocket).unwrap();
+    let client = Client::debug(rocket).unwrap();
 
     let foo_a = Accept::new(&[MediaType::new("application", "foo").into()]);
     let foo_ct = ContentType::new("application", "foo");

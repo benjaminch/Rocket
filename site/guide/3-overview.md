@@ -87,8 +87,7 @@ routing and error handling.
   anywhere in your application without importing them explicitly.
 
   You may instead prefer to import macros explicitly or refer to them with
-  absolute paths: `use rocket::get;` or `#[rocket::get]`. The [`hello_2018`
-  example](@example/hello_2018) showcases this alternative.
+  absolute paths: `use rocket::get;` or `#[rocket::get]`.
 
 ## Mounting
 
@@ -102,7 +101,7 @@ Before Rocket can dispatch requests to a route, the route needs to be _mounted_:
 #     "hello, world!"
 # }
 
-rocket::ignite().mount("/hello", routes![world]);
+rocket::build().mount("/hello", routes![world]);
 ```
 
 The `mount` method takes as input:
@@ -111,7 +110,7 @@ The `mount` method takes as input:
    2. A list of routes via the `routes!` macro: here, `routes![world]`, with
       multiple routes: `routes![a, b, c]`.
 
-This creates a new `Rocket` instance via the `ignite` function and mounts the
+This creates a new `Rocket` instance via the `build` function and mounts the
 `world` route to the `/hello` base path, making Rocket aware of the route.
 `GET` requests to `/hello/world` will be directed to the `world` function.
 
@@ -126,7 +125,7 @@ any number of times, and routes can be reused by mount points:
 #     "hello, world!"
 # }
 
-rocket::ignite()
+rocket::build()
     .mount("/hello", routes![world])
     .mount("/hi", routes![world]);
 ```
@@ -156,8 +155,8 @@ fn world() -> &'static str {
 }
 
 #[launch]
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/hello", routes![world])
+fn rocket() -> _ {
+    rocket::build().mount("/hello", routes![world])
 }
 ```
 
@@ -166,37 +165,35 @@ Running the application, the console shows:
 ```sh
 > cargo run
 🔧 Configured for debug.
-    => address: 127.0.0.1
-    => port: 8000
-    => workers: 64
-    => log level: normal
-    => secret key: [zero]
-    => limits: forms = 32KiB
-    => cli colors: true
-    => keep-alive: 5s
-    => tls: disabled
-🛰  Mounting /hello:
-    => GET /hello/world (world)
+   >> address: 127.0.0.1
+   >> port: 8000
+   >> workers: [..]
+   >> keep-alive: 5s
+   >> limits: [..]
+   >> tls: disabled
+   >> temp dir: /tmp
+   >> log level: normal
+   >> cli colors: true
+🛰  Routes:
+   >> (world) GET /hello/world
 🚀 Rocket has launched from http://127.0.0.1:8000
 ```
 
-! tip: You can also return `_` from a `#[launch]` function!
+! tip: `#[launch]` infers the return type!
 
-  If you find it more pleasing, `#[launch]` can infer the return type of
-  `Rocket` for you by using `_` as the return type:
-
-  `
-  #[launch] fn rocket() -> _ { /* ... */ }
-  `
+  Special to Rocket's `#[launch]` attribute, the return type of a function
+  decorated with `#[launch]` is automatically inferred when the return type is
+  set to `_`. If you prefer, you can also set the return type explicitly to
+  `Rocket<Build>`.
 
 If we visit `http://127.0.0.1:8000/hello/world`, we see `Hello, world!`, exactly
 as we expected.
 
 ! note: This and other examples are on GitHub.
 
-  A version of this example's complete crate, ready to `cargo run`, can be found
-  on [GitHub](@example/hello_world). You can find dozens of other complete
-  examples, spanning all of Rocket's features, in the [GitHub examples
+  An expanded version of this example's complete crate, ready to `cargo run`,
+  can be found on [GitHub](@example/hello). You can find dozens of other
+  complete examples, spanning all of Rocket's features, in the [GitHub examples
   directory](@example/).
 
 The second approach uses the `#[rocket::main]` route attribute.
@@ -213,7 +210,7 @@ runtime but unlike `#[launch]`, allows _you_ to start the server:
 
 #[rocket::main]
 async fn main() {
-    rocket::ignite()
+    rocket::build()
         .mount("/hello", routes![world])
         .launch()
         .await;
@@ -222,10 +219,10 @@ async fn main() {
 
 `#[rocket::main]` is useful when a handle to the `Future` returned by `launch()`
 is desired, or when the return value of [`launch()`] is to be inspected. The
-[errors example] for instance, inspects the return value.
+[error handling example] for instance, inspects the return value.
 
 [`launch()`]: @api/rocket/struct.Rocket.html#method.launch
-[errors example]: @example/errors
+[error handling example]: @example/error-handling
 
 ## Futures and Async
 
@@ -264,6 +261,25 @@ You can find async-ready libraries on [crates.io](https://crates.io) with the
   Rocket master uses the tokio runtime. The runtime is started for you if you
   use `#[launch]` or `#[rocket::main]`, but you can still `launch()` a Rocket
   instance on a custom-built runtime by not using _either_ attribute.
+
+### Async Routes
+
+Rocket makes it easy to use `async/await` in routes.
+
+```rust
+# #[macro_use] extern crate rocket;
+use rocket::tokio::time::{sleep, Duration};
+
+#[get("/delay/<seconds>")]
+async fn delay(seconds: u64) -> String {
+    sleep(Duration::from_secs(seconds)).await;
+    format!("Waited for {} seconds", seconds)
+}
+```
+
+First, notice that the route function is an `async fn`. This enables the use of
+`await` inside the handler. `sleep` is an asynchronous function, so we must
+`await` it.
 
 ### Multitasking
 

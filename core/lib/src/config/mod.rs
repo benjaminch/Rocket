@@ -21,7 +21,7 @@
 //!
 //! #[rocket::launch]
 //! fn rocket() -> _ {
-//!     rocket::ignite().attach(AdHoc::config::<AppConfig>())
+//!     rocket::build().attach(AdHoc::config::<AppConfig>())
 //! }
 //! ```
 //!
@@ -44,9 +44,9 @@
 //! ## Custom Providers
 //!
 //! A custom provider can be set via [`rocket::custom()`], which replaces calls to
-//! [`rocket::ignite()`]. The configured provider can be built on top of
+//! [`rocket::build()`]. The configured provider can be built on top of
 //! [`Config::figment()`], [`Config::default()`], both, or neither. The
-//! [Figment](@figment) documentation has full details on instantiating existing
+//! [Figment](figment) documentation has full details on instantiating existing
 //! providers like [`Toml`]() and [`Env`] as well as creating custom providers for
 //! more complex cases.
 //!
@@ -70,13 +70,14 @@
 //! An application that wants to use Rocket's defaults for [`Config`], but not
 //! its configuration sources, while allowing the application to be configured
 //! via an `App.toml` file that uses top-level keys as profiles (`.nested()`)
-//! and `APP_` environment variables as global overrides (`.global()`), can be
-//! structured as follows:
+//! and `APP_` environment variables as global overrides (`.global()`), and
+//! `APP_PROFILE` to configure the selected profile, can be structured as
+//! follows:
 //!
 //! ```rust
 //! # #[macro_use] extern crate rocket;
 //! use serde::{Serialize, Deserialize};
-//! use figment::{Figment, providers::{Format, Toml, Serialized, Env}};
+//! use figment::{Figment, Profile, providers::{Format, Toml, Serialized, Env}};
 //! use rocket::fairing::AdHoc;
 //!
 //! #[derive(Debug, Deserialize, Serialize)]
@@ -96,7 +97,8 @@
 //!     let figment = Figment::from(rocket::Config::default())
 //!         .merge(Serialized::defaults(Config::default()))
 //!         .merge(Toml::file("App.toml").nested())
-//!         .merge(Env::prefixed("APP_").global());
+//!         .merge(Env::prefixed("APP_").global())
+//!         .select(Profile::from_env_or("APP_PROFILE", "default"));
 //!
 //!     rocket::custom(figment)
 //!         .mount("/", routes![/* .. */])
@@ -105,67 +107,63 @@
 //! ```
 //!
 //! [`rocket::custom()`]: crate::custom()
-//! [`rocket::ignite()`]: crate::ignite()
+//! [`rocket::build()`]: crate::build()
 //! [`Toml`]: figment::providers::Toml
 //! [`Env`]: figment::providers::Env
 
-mod secret_key;
 mod config;
 mod tls;
+
+#[cfg(feature = "secrets")]
+mod secret_key;
 
 #[doc(hidden)] pub use config::pretty_print_error;
 
 pub use config::Config;
-pub use crate::logger::LogLevel;
-pub use secret_key::SecretKey;
+pub use crate::log::LogLevel;
 pub use tls::TlsConfig;
+
+#[cfg(feature = "secrets")]
+#[cfg_attr(nightly, doc(cfg(feature = "secrets")))]
+pub use secret_key::SecretKey;
 
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
-    use figment::Figment;
+    use figment::{Figment, Profile};
+    use pretty_assertions::assert_eq;
 
     use crate::config::{Config, TlsConfig};
-    use crate::logger::LogLevel;
+    use crate::log::LogLevel;
     use crate::data::{Limits, ToByteUnit};
 
     #[test]
     fn test_default_round_trip() {
-        let figment = Figment::from(Config::default());
+        figment::Jail::expect_with(|_| {
+            let original = Config::figment();
+            let roundtrip = Figment::from(Config::from(&original));
+            for figment in &[original, roundtrip] {
+                let config = Config::from(figment);
+                assert_eq!(config, Config::default());
+            }
 
-        assert_eq!(figment.profile(), Config::DEFAULT_PROFILE);
-
-        #[cfg(debug_assertions)]
-        assert_eq!(figment.profile(), Config::DEBUG_PROFILE);
-
-        #[cfg(not(debug_assertions))]
-        assert_eq!(figment.profile(), Config::RELEASE_PROFILE);
-
-        let config: Config = figment.extract().unwrap();
-        assert_eq!(config, Config::default());
-
-        #[cfg(debug_assertions)]
-        assert_eq!(config, Config::debug_default());
-
-        #[cfg(not(debug_assertions))]
-        assert_eq!(config, Config::release_default());
-
-        assert_eq!(Config::from(Config::default()), Config::default());
+            Ok(())
+        });
     }
 
     #[test]
     fn test_profile_env() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("ROCKET_PROFILE", "debug");
-            let figment = Figment::from(Config::default());
+            let figment = Config::figment();
             assert_eq!(figment.profile(), "debug");
 
             jail.set_env("ROCKET_PROFILE", "release");
-            let figment = Figment::from(Config::default());
+            let figment = Config::figment();
             assert_eq!(figment.profile(), "release");
 
             jail.set_env("ROCKET_PROFILE", "random");
-            let figment = Figment::from(Config::default());
+            let figment = Config::figment();
             assert_eq!(figment.profile(), "random");
 
             Ok(())
@@ -299,6 +297,7 @@ mod tests {
             jail.set_env("ROCKET_PROFILE", "unknown");
             let config = Config::from(Config::figment());
             assert_eq!(config, Config {
+                profile: Profile::const_new("unknown"),
                 limits: Limits::default()
                     .limit("stream", 50.kilobytes())
                     .limit("forms", 2.kilobytes()),
@@ -308,6 +307,7 @@ mod tests {
             jail.set_env("ROCKET_PROFILE", "debug");
             let config = Config::from(Config::figment());
             assert_eq!(config, Config {
+                profile: Profile::const_new("debug"),
                 limits: Limits::default()
                     .limit("stream", 50.kilobytes())
                     .limit("forms", 2.kilobytes())
@@ -394,6 +394,62 @@ mod tests {
             jail.set_env("ROCKET_PROFILE", "foo");
             let val: Result<String, _> = Config::figment().extract_inner("profile");
             assert!(val.is_err());
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "secrets")]
+    #[should_panic]
+    fn test_err_on_non_debug_and_no_secret_key() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("ROCKET_PROFILE", "release");
+            let rocket = crate::custom(Config::figment());
+            let _result = crate::local::blocking::Client::untracked(rocket);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "secrets")]
+    #[should_panic]
+    fn test_err_on_non_debug2_and_no_secret_key() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("ROCKET_PROFILE", "boop");
+            let rocket = crate::custom(Config::figment());
+            let _result = crate::local::blocking::Client::tracked(rocket);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_no_err_on_debug_and_no_secret_key() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("ROCKET_PROFILE", "debug");
+            let figment = Config::figment();
+            assert!(crate::local::blocking::Client::untracked(crate::custom(&figment)).is_ok());
+            crate::async_main(async {
+                let rocket = crate::custom(&figment);
+                assert!(crate::local::asynchronous::Client::tracked(rocket).await.is_ok());
+            });
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_no_err_on_release_and_custom_secret_key() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("ROCKET_PROFILE", "release");
+            let key = "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk=";
+            let figment = Config::figment().merge(("secret_key", key));
+
+            assert!(crate::local::blocking::Client::tracked(crate::custom(&figment)).is_ok());
+            crate::async_main(async {
+                let rocket = crate::custom(&figment);
+                assert!(crate::local::asynchronous::Client::untracked(rocket).await.is_ok());
+            });
 
             Ok(())
         });

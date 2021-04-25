@@ -5,12 +5,12 @@
 mod templates_tests {
     use std::path::{Path, PathBuf};
 
-    use rocket::{Rocket, http::RawStr};
+    use rocket::{Rocket, Build};
     use rocket::config::Config;
     use rocket_contrib::templates::{Template, Metadata};
 
     #[get("/<engine>/<name>")]
-    fn template_check(md: Metadata<'_>, engine: &RawStr, name: &RawStr) -> Option<()> {
+    fn template_check(md: Metadata<'_>, engine: &str, name: &str) -> Option<()> {
         match md.contains_template(&format!("{}/{}", engine, name)) {
             true => Some(()),
             false => None
@@ -26,7 +26,7 @@ mod templates_tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("templates")
     }
 
-    fn rocket() -> Rocket {
+    fn rocket() -> Rocket<Build> {
         rocket::custom(Config::figment().merge(("template_dir", template_root())))
             .attach(Template::fairing())
             .mount("/", routes![template_check, is_reloading])
@@ -36,17 +36,69 @@ mod templates_tests {
     fn test_callback_error() {
         use rocket::{local::blocking::Client, error::ErrorKind::FailedFairings};
 
-        let rocket = rocket::ignite().attach(Template::try_custom(|_| {
+        let rocket = rocket::build().attach(Template::try_custom(|_| {
             Err("error reloading templates!".into())
         }));
 
-        match Client::untracked(rocket) {
-            Err(e) => match e.kind() {
-                FailedFairings(failures) => assert_eq!(failures[0], "Templates"),
-                _ => panic!("Wrong kind of launch error"),
-            }
-            _ => panic!("Wrong kind of error"),
+        let error = Client::debug(rocket).expect_err("client failure");
+        match error.kind() {
+            FailedFairings(failures) => assert_eq!(failures[0].name, "Templating"),
+            _ => panic!("Wrong kind of launch error"),
         }
+    }
+
+    #[test]
+    fn test_sentinel() {
+        use rocket::{local::blocking::Client, error::ErrorKind::SentinelAborts};
+
+        let err = Client::debug_with(routes![is_reloading]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 1));
+
+        let err = Client::debug_with(routes![is_reloading, template_check]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 2));
+
+        #[get("/")]
+        fn return_template() -> Template {
+            Template::render("foo", ())
+        }
+
+        let err = Client::debug_with(routes![return_template]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 1));
+
+        #[get("/")]
+        fn return_opt_template() -> Option<Template> {
+            Some(Template::render("foo", ()))
+        }
+
+        let err = Client::debug_with(routes![return_opt_template]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 1));
+
+        #[derive(rocket::Responder)]
+        struct MyThing<T>(T);
+
+        #[get("/")]
+        fn return_custom_template() -> MyThing<Template> {
+            MyThing(Template::render("foo", ()))
+        }
+
+        let err = Client::debug_with(routes![return_custom_template]).unwrap_err();
+        assert!(matches!(err.kind(), SentinelAborts(vec) if vec.len() == 1));
+
+        #[derive(rocket::Responder)]
+        struct MyOkayThing<T>(Option<T>);
+
+        impl<T> rocket::Sentinel for MyOkayThing<T> {
+            fn abort(_: &Rocket<rocket::Ignite>) -> bool {
+                false
+            }
+        }
+
+        #[get("/")]
+        fn always_ok_sentinel() -> MyOkayThing<Template> {
+            MyOkayThing(None)
+        }
+
+        Client::debug_with(routes![always_ok_sentinel]).expect("no sentinel abort");
     }
 
     #[cfg(feature = "tera_templates")]
@@ -63,23 +115,23 @@ mod templates_tests {
 
         #[test]
         fn test_tera_templates() {
-            let rocket = rocket();
+            let client = Client::debug(rocket()).unwrap();
             let mut map = HashMap::new();
             map.insert("title", "_test_");
             map.insert("content", "<script />");
 
             // Test with a txt file, which shouldn't escape.
-            let template = Template::show(&rocket, "tera/txt_test", &map);
+            let template = Template::show(client.rocket(), "tera/txt_test", &map);
             assert_eq!(template, Some(UNESCAPED_EXPECTED.into()));
 
             // Now with an HTML file, which should.
-            let template = Template::show(&rocket, "tera/html_test", &map);
+            let template = Template::show(client.rocket(), "tera/html_test", &map);
             assert_eq!(template, Some(ESCAPED_EXPECTED.into()));
         }
 
         #[test]
         fn test_template_metadata_with_tera() {
-            let client = Client::tracked(rocket()).unwrap();
+            let client = Client::debug(rocket()).unwrap();
 
             let response = client.get("/tera/txt_test").dispatch();
             assert_eq!(response.status(), Status::Ok);
@@ -107,19 +159,19 @@ mod templates_tests {
 
         #[test]
         fn test_handlebars_templates() {
-            let rocket = rocket();
+            let client = Client::debug(rocket()).unwrap();
             let mut map = HashMap::new();
             map.insert("title", "_test_");
             map.insert("content", "<script /> hi");
 
             // Test with a txt file, which shouldn't escape.
-            let template = Template::show(&rocket, "hbs/test", &map);
+            let template = Template::show(client.rocket(), "hbs/test", &map);
             assert_eq!(template, Some(EXPECTED.into()));
         }
 
         #[test]
         fn test_template_metadata_with_handlebars() {
-            let client = Client::tracked(rocket()).unwrap();
+            let client = Client::debug(rocket()).unwrap();
 
             let response = client.get("/hbs/test").dispatch();
             assert_eq!(response.status(), Status::Ok);
@@ -156,7 +208,7 @@ mod templates_tests {
             write_file(&reload_path, INITIAL_TEXT);
 
             // set up the client. if we can't reload templates, then just quit
-            let client = Client::tracked(rocket()).unwrap();
+            let client = Client::debug(rocket()).unwrap();
             let res = client.get("/is_reloading").dispatch();
             if res.status() != Status::Ok {
                 return;

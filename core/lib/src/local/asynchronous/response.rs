@@ -27,11 +27,10 @@ use crate::{Request, Response};
 ///     "Hello, world!"
 /// }
 ///
-/// # /*
 /// #[launch]
-/// # */
-/// fn rocket() -> rocket::Rocket {
-///     rocket::ignite().mount("/", routes![hello_world])
+/// fn rocket() -> _ {
+///     rocket::build().mount("/", routes![hello_world])
+///     #    .configure(rocket::Config::debug_default())
 /// }
 ///
 /// # async fn read_body_manually() -> io::Result<()> {
@@ -80,7 +79,7 @@ impl<'c> LocalResponse<'c> {
         //      otherwise, methods like `.headers()` could, in conjunction with
         //      particular crafted `Responder`s, potentially be used to obtain a
         //      reference to contents of `Request`. All methods, instead, return
-        //      references bounded by `self`. This is easily verified by nothing
+        //      references bounded by `self`. This is easily verified by noting
         //      that 1) `LocalResponse` fields are private, and 2) all `impl`s
         //      of `LocalResponse` aside from this method abstract the lifetime
         //      away as `'_`, ensuring it is not used for any output value.
@@ -89,7 +88,7 @@ impl<'c> LocalResponse<'c> {
 
         async move {
             let response: Response<'c> = f(request).await;
-            let mut cookies = CookieJar::new(&request.state.config.secret_key);
+            let mut cookies = CookieJar::new(request.rocket().config());
             for cookie in response.cookies() {
                 cookies.add_original(cookie.into_owned());
             }
@@ -117,7 +116,7 @@ impl LocalResponse<'_> {
     }
 
     // Generates the public API methods, which call the private methods above.
-    pub_response_impl!("# use rocket::local::asynchronous::Client;
+    pub_response_impl!("# use rocket::local::asynchronous::Client;\n\
         use rocket::local::asynchronous::LocalResponse;" async await);
 }
 

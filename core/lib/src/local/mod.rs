@@ -41,11 +41,9 @@
 //!     "Hello, world!"
 //! }
 //!
-//! # /*
 //! #[launch]
-//! # */
-//! fn rocket() -> rocket::Rocket {
-//!     rocket::ignite().mount("/", routes![hello])
+//! fn rocket() -> _ {
+//!     rocket::build().mount("/", routes![hello])
 //! }
 //!
 //! #[cfg(test)]

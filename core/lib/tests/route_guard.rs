@@ -6,7 +6,7 @@ use rocket::Route;
 
 #[get("/<path..>")]
 fn files(route: &Route, path: PathBuf) -> String {
-    Path::new(route.base()).join(path).normalized_str().to_string()
+    Path::new(route.uri.base()).join(path).normalized_str().to_string()
 }
 
 mod route_guard_tests {
@@ -20,11 +20,11 @@ mod route_guard_tests {
 
     #[test]
     fn check_mount_path() {
-        let rocket = rocket::ignite()
+        let rocket = rocket::build()
             .mount("/first", routes![files])
             .mount("/second", routes![files]);
 
-        let client = Client::tracked(rocket).unwrap();
+        let client = Client::debug(rocket).unwrap();
         assert_path(&client, "/first/some/path");
         assert_path(&client, "/second/some/path");
         assert_path(&client, "/first/second/b/c");

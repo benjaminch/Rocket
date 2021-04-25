@@ -4,8 +4,7 @@ use std::{io, fmt};
 use std::sync::atomic::{Ordering, AtomicBool};
 
 use yansi::Paint;
-
-use crate::router::Route;
+use figment::Profile;
 
 /// An error that occurs during launch.
 ///
@@ -24,7 +23,7 @@ use crate::router::Route;
 ///
 /// ```rust
 /// # let _ = async {
-/// if let Err(error) = rocket::ignite().launch().await {
+/// if let Err(error) = rocket::build().launch().await {
 ///     // This println "inspects" the error.
 ///     println!("Launch failed! Error: {}", error);
 ///
@@ -39,7 +38,7 @@ use crate::router::Route;
 ///
 /// ```rust
 /// # let _ = async {
-/// let error = rocket::ignite().launch().await;
+/// let error = rocket::build().launch().await;
 ///
 /// // This call to drop (explicit here for demonstration) will result in
 /// // `error` being pretty-printed to the console along with a `panic!`.
@@ -71,6 +70,7 @@ pub struct Error {
 /// encountered an error; these are represented by the `Collision` and
 /// `FailedFairing` variants, respectively.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ErrorKind {
     /// Binding to the provided address/port failed.
     Bind(io::Error),
@@ -78,10 +78,17 @@ pub enum ErrorKind {
     Io(io::Error),
     /// An I/O error occurred in the runtime.
     Runtime(Box<dyn std::error::Error + Send + Sync>),
+    /// A valid [`Config`](crate::Config) could not be extracted from the
+    /// configured figment.
+    Config(figment::Error),
     /// Route collisions were detected.
-    Collision(Vec<(Route, Route)>),
-    /// A launch fairing reported an error.
-    FailedFairings(Vec<&'static str>),
+    Collisions(crate::router::Collisions),
+    /// Launch fairing(s) failed.
+    FailedFairings(Vec<crate::fairing::Info>),
+    /// Sentinels requested abort.
+    SentinelAborts(Vec<crate::sentinel::Sentry>),
+    /// The configuration profile is not debug but not secret key is configured.
+    InsecureSecretKey(Profile),
 }
 
 impl From<ErrorKind> for Error {
@@ -114,7 +121,7 @@ impl Error {
     /// use rocket::error::ErrorKind;
     ///
     /// # let _ = async {
-    /// if let Err(error) = rocket::ignite().launch().await {
+    /// if let Err(error) = rocket::build().launch().await {
     ///     match error.kind() {
     ///         ErrorKind::Io(e) => println!("found an i/o launch error: {}", e),
     ///         e => println!("something else happened: {}", e)
@@ -137,9 +144,12 @@ impl fmt::Display for ErrorKind {
         match self {
             ErrorKind::Bind(e) => write!(f, "binding failed: {}", e),
             ErrorKind::Io(e) => write!(f, "I/O error: {}", e),
-            ErrorKind::Collision(_) => write!(f, "route collisions detected"),
-            ErrorKind::FailedFairings(_) => write!(f, "a launch fairing failed"),
-            ErrorKind::Runtime(e) => write!(f, "runtime error: {}", e)
+            ErrorKind::Collisions(_) => "collisions detected".fmt(f),
+            ErrorKind::FailedFairings(_) => "launch fairing(s) failed".fmt(f),
+            ErrorKind::Runtime(e) => write!(f, "runtime error: {}", e),
+            ErrorKind::InsecureSecretKey(_) => "insecure secret key config".fmt(f),
+            ErrorKind::Config(_) => "failed to extract configuration".fmt(f),
+            ErrorKind::SentinelAborts(_) => "sentinel(s) aborted".fmt(f),
         }
     }
 }
@@ -166,81 +176,65 @@ impl Drop for Error {
             return
         }
 
-        match *self.kind() {
+        match self.kind() {
             ErrorKind::Bind(ref e) => {
                 error!("Rocket failed to bind network socket to given address/port.");
                 info_!("{}", e);
-                panic!("aborting due to binding o error");
+                panic!("aborting due to socket bind error");
             }
             ErrorKind::Io(ref e) => {
                 error!("Rocket failed to launch due to an I/O error.");
                 info_!("{}", e);
                 panic!("aborting due to i/o error");
             }
-            ErrorKind::Collision(ref collisions) => {
-                error!("Rocket failed to launch due to the following routing collisions:");
-                for &(ref a, ref b) in collisions {
-                    info_!("{} {} {}", a, Paint::red("collides with").italic(), b)
+            ErrorKind::Collisions(ref collisions) => {
+                fn log_collisions<T: fmt::Display>(kind: &str, collisions: &[(T, T)]) {
+                    if collisions.is_empty() { return }
+
+                    error!("Rocket failed to launch due to the following {} collisions:", kind);
+                    for &(ref a, ref b) in collisions {
+                        info_!("{} {} {}", a, Paint::red("collides with").italic(), b)
+                    }
                 }
 
-                info_!("Note: Collisions can usually be resolved by ranking routes.");
-                panic!("route collisions detected");
+                log_collisions("route", &collisions.routes);
+                log_collisions("catcher", &collisions.catchers);
+
+                info_!("Note: Route collisions can usually be resolved by ranking routes.");
+                panic!("routing collisions detected");
             }
             ErrorKind::FailedFairings(ref failures) => {
                 error!("Rocket failed to launch due to failing fairings:");
                 for fairing in failures {
-                    info_!("{}", fairing);
+                    info_!("{}", fairing.name);
                 }
 
-                panic!("aborting due to launch fairing failure");
+                panic!("aborting due to fairing failure(s)");
             }
             ErrorKind::Runtime(ref err) => {
                 error!("An error occured in the runtime:");
                 info_!("{}", err);
                 panic!("aborting due to runtime failure");
             }
-        }
-    }
-}
-
-use crate::http::uri;
-use crate::http::ext::IntoOwned;
-use crate::http::route::Error as SegmentError;
-
-/// Error returned by [`Route::map_base()`] on invalid URIs.
-#[derive(Debug)]
-pub enum RouteUriError {
-    /// The base (mount point) or route path contains invalid segments.
-    Segment(String, String),
-    /// The route URI is not a valid URI.
-    Uri(uri::Error<'static>),
-    /// The base (mount point) contains dynamic segments.
-    DynamicBase,
-}
-
-impl<'a> From<(&'a str, SegmentError<'a>)> for RouteUriError {
-    fn from((seg, err): (&'a str, SegmentError<'a>)) -> Self {
-        RouteUriError::Segment(seg.into(), err.to_string())
-    }
-}
-
-impl<'a> From<uri::Error<'a>> for RouteUriError {
-    fn from(error: uri::Error<'a>) -> Self {
-        RouteUriError::Uri(error.into_owned())
-    }
-}
-
-impl fmt::Display for RouteUriError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RouteUriError::Segment(seg, err) => {
-                write!(f, "Malformed segment '{}': {}", Paint::white(seg), err)
+            ErrorKind::InsecureSecretKey(profile) => {
+                error!("secrets enabled in non-debug without `secret_key`");
+                info_!("selected profile: {}", Paint::default(profile).bold());
+                info_!("disable `secrets` feature or configure a `secret_key`");
+                panic!("aborting due to insecure configuration")
             }
-            RouteUriError::DynamicBase => {
-                write!(f, "The mount point contains dynamic parameters.")
+            ErrorKind::Config(error) => {
+                crate::config::pretty_print_error(error.clone());
+                panic!("aborting due to invalid configuration")
             }
-            RouteUriError::Uri(error) => {
-                write!(f, "Malformed URI: {}", error)
+            ErrorKind::SentinelAborts(ref failures) => {
+                error!("Rocket failed to launch due to aborting sentinels:");
+                for sentry in failures {
+                    let name = Paint::default(sentry.type_name).bold();
+                    let (file, line, col) = sentry.location;
+                    info_!("{} ({}:{}:{})", name, file, line, col);
+                }
+
+                panic!("aborting due to sentinel-triggered abort(s)");
             }
         }
     }

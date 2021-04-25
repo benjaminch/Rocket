@@ -1,5 +1,5 @@
 #[macro_use] extern crate rocket;
-use rocket::Route;
+use rocket::{Rocket, Route, Build};
 
 pub fn prepend(prefix: &str, route: Route) -> Route {
     route.map_base(|base| format!("{}{}", prefix, base)).unwrap()
@@ -20,8 +20,8 @@ mod a {
     }
 }
 
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/", a::routes()).mount("/foo", a::routes())
+fn rocket() -> Rocket<Build> {
+    rocket::build().mount("/", a::routes()).mount("/foo", a::routes())
 }
 
 mod mapped_base_tests {
@@ -30,7 +30,7 @@ mod mapped_base_tests {
 
     #[test]
     fn only_prefix() {
-        let client = Client::tracked(super::rocket()).unwrap();
+        let client = Client::debug(super::rocket()).unwrap();
 
         let response = client.get("/a/b/3").dispatch();
         assert_eq!(response.into_string().unwrap(), "3");
@@ -44,7 +44,7 @@ mod mapped_base_tests {
 
     #[test]
     fn prefix_and_base() {
-        let client = Client::tracked(super::rocket()).unwrap();
+        let client = Client::debug(super::rocket()).unwrap();
 
         let response = client.get("/foo/a/b/23").dispatch();
         assert_eq!(response.into_string().unwrap(), "23");

@@ -1,4 +1,4 @@
-use rocket::{Request, State};
+use rocket::{Request, State, Rocket, Ignite, Sentinel};
 use rocket::http::Status;
 use rocket::request::{self, FromRequest};
 
@@ -28,9 +28,8 @@ use crate::templates::ContextManager;
 ///     }
 /// }
 ///
-///
 /// fn main() {
-///     rocket::ignite()
+///     rocket::build()
 ///         .attach(Template::fairing())
 ///         // ...
 ///     # ;
@@ -81,14 +80,29 @@ impl Metadata<'_> {
     }
 }
 
+impl Sentinel for Metadata<'_> {
+    fn abort(rocket: &Rocket<Ignite>) -> bool {
+        if rocket.state::<ContextManager>().is_none() {
+            let md = rocket::yansi::Paint::default("Metadata").bold();
+            let fairing = rocket::yansi::Paint::default("Template::fairing()").bold();
+            error!("requested `{}` guard without attaching `{}`.", md, fairing);
+            info_!("To use or query templates, you must attach `{}`.", fairing);
+            info_!("See the `Template` documentation for more information.");
+            return true;
+        }
+
+        false
+    }
+}
+
 /// Retrieves the template metadata. If a template fairing hasn't been attached,
 /// an error is printed and an empty `Err` with status `InternalServerError`
 /// (`500`) is returned.
 #[rocket::async_trait]
-impl<'a, 'r> FromRequest<'a, 'r> for Metadata<'a> {
+impl<'r> FromRequest<'r> for Metadata<'r> {
     type Error = ();
 
-    async fn from_request(request: &'a Request<'r>) -> request::Outcome<Self, ()> {
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, ()> {
         request.guard::<State<'_, ContextManager>>().await
             .succeeded()
             .and_then(|cm| Some(request::Outcome::Success(Metadata(cm.inner()))))

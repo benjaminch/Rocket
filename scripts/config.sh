@@ -40,6 +40,7 @@ PROJECT_ROOT=$(relative "") || exit $?
 CORE_ROOT=$(relative "core") || exit $?
 CONTRIB_ROOT=$(relative "contrib") || exit $?
 SITE_ROOT=$(relative "site") || exit $?
+BENCHMARKS_ROOT=$(relative "benchmarks") || exit $?
 
 # Root of project-like directories.
 CORE_LIB_ROOT=$(relative "core/lib") || exit $?
@@ -47,6 +48,7 @@ CORE_CODEGEN_ROOT=$(relative "core/codegen") || exit $?
 CORE_HTTP_ROOT=$(relative "core/http") || exit $?
 CONTRIB_LIB_ROOT=$(relative "contrib/lib") || exit $?
 CONTRIB_CODEGEN_ROOT=$(relative "contrib/codegen") || exit $?
+GUIDE_TESTS_ROOT=$(relative "site/tests") || exit $?
 
 # Root of infrastructure directories.
 EXAMPLES_DIR=$(relative "examples") || exit $?
@@ -92,11 +94,13 @@ function print_environment() {
   echo "  CORE_ROOT: ${CORE_ROOT}"
   echo "  CONTRIB_ROOT: ${CONTRIB_ROOT}"
   echo "  SITE_ROOT: ${SITE_ROOT}"
+  echo "  BENCHMARKS_ROOT: ${BENCHMARKS_ROOT}"
   echo "  CORE_LIB_ROOT: ${CORE_LIB_ROOT}"
   echo "  CORE_CODEGEN_ROOT: ${CORE_CODEGEN_ROOT}"
   echo "  CORE_HTTP_ROOT: ${CORE_HTTP_ROOT}"
   echo "  CONTRIB_LIB_ROOT: ${CONTRIB_LIB_ROOT}"
   echo "  CONTRIB_CODEGEN_ROOT: ${CONTRIB_CODEGEN_ROOT}"
+  echo "  GUIDE_TESTS_ROOT: ${GUIDE_TESTS_ROOT}"
   echo "  EXAMPLES_DIR: ${EXAMPLES_DIR}"
   echo "  DOC_DIR: ${DOC_DIR}"
   echo "  ALL_PROJECT_DIRS: ${ALL_PROJECT_DIRS[*]}"

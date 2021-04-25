@@ -24,47 +24,61 @@ tls = ["rocket_http/tls"]
 secrets = ["rocket_http/private-cookies"]
 
 [dependencies]
-rocket_codegen = { version = "0.5.0-dev", path = "../codegen" }
-rocket_http = { version = "0.5.0-dev", path = "../http" }
 futures = "0.3.0"
 yansi = "0.5"
 log = { version = "0.4", features = ["std"] }
 num_cpus = "1.0"
-state = "0.4.1"
 time = "0.2.11"
 memchr = "2" # TODO: Use pear instead.
 binascii = "0.1"
 atty = "0.2"
-async-trait = "0.1"
 ref-cast = "1.0"
 atomic = "0.5"
 parking_lot = "0.11"
 ubyte = {version = "0.10", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-figment = { version = "0.10.2", features = ["toml", "env"] }
-rand = "0.7"
+figment = { version = "0.10.4", features = ["toml", "env"] }
+rand = "0.8"
 either = "1"
+pin-project-lite = "0.2"
+indexmap = { version = "1.0", features = ["serde-1"] }
+tempfile = "3"
+async-trait = "0.1.43"
+
+[dependencies.state]
+git = "https://github.com/SergioBenitez/state.git"
+rev = "8f94dc"
+
+[dependencies.rocket_codegen]
+version = "0.5.0-dev"
+path = "../codegen"
+
+[dependencies.rocket_http]
+version = "0.5.0-dev"
+path = "../http"
+features = ["serde"]
+
+[dependencies.multer]
+git = "https://github.com/rousan/multer-rs.git"
+rev = "7e4f0c5f"
+features = ["tokio-io"]
 
 [dependencies.tokio]
 version = "1.0"
 features = ["fs", "io-std", "io-util", "rt-multi-thread", "sync", "signal", "macros"]
+
+[dependencies.tokio-util]
+version = "0.6"
+default-features = false
+features = ["io"]
+
+[dependencies.bytes]
+version = "1.0"
 
 [build-dependencies]
 yansi = "0.5"
 version_check = "0.9.1"
 
 [dev-dependencies]
-bencher = "0.1"
 figment = { version = "0.10", features = ["test"] }
-
-[[bench]]
-name = "format-routing"
-harness = false
-
-[[bench]]
-name = "ranked-routing"
-harness = false
-
-[[bench]]
-name = "simple-routing"
-harness = false
+pretty_assertions = "0.7"

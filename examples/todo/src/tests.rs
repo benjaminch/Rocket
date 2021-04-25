@@ -1,6 +1,5 @@
 use super::task::Task;
 
-use parking_lot::Mutex;
 use rand::{Rng, thread_rng, distributions::Alphanumeric};
 
 use rocket::local::asynchronous::Client;
@@ -9,15 +8,14 @@ use rocket::http::{Status, ContentType};
 // We use a lock to synchronize between tests so DB operations don't collide.
 // For now. In the future, we'll have a nice way to run each test in a DB
 // transaction so we can regain concurrency.
-static DB_LOCK: Mutex<()> = parking_lot::const_mutex(());
+static DB_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
 
 macro_rules! run_test {
     (|$client:ident, $conn:ident| $block:expr) => ({
         let _lock = DB_LOCK.lock();
 
         rocket::async_test(async move {
-            let rocket = super::rocket();
-            let $client = Client::tracked(rocket).await.expect("Rocket client");
+            let $client = Client::tracked(super::rocket()).await.expect("Rocket client");
             let db = super::DbConn::get_one($client.rocket()).await;
             let $conn = db.expect("failed to get database connection for testing");
             Task::delete_all(&$conn).await.expect("failed to delete all tasks for testing");
@@ -25,6 +23,16 @@ macro_rules! run_test {
             $block
         })
     })
+}
+
+#[test]
+fn test_index() {
+    use rocket::local::blocking::Client;
+
+    let _lock = DB_LOCK.lock();
+    let client = Client::tracked(super::rocket()).unwrap();
+    let response = client.get("/").dispatch();
+    assert_eq!(response.status(), Status::Ok);
 }
 
 #[test]
@@ -95,7 +103,12 @@ fn test_many_insertions() {
 
         for i in 0..ITER {
             // Issue a request to insert a new task with a random description.
-            let desc: String = thread_rng().sample_iter(&Alphanumeric).take(12).collect();
+            let desc: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(12)
+                .map(char::from)
+                .collect();
+
             client.post("/todo")
                 .header(ContentType::Form)
                 .body(format!("description={}", desc))

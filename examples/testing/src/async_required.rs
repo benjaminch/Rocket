@@ -1,4 +1,4 @@
-use rocket::State;
+use rocket::{Rocket, State, Build};
 use rocket::fairing::AdHoc;
 use rocket::tokio::sync::Barrier;
 
@@ -9,11 +9,11 @@ async fn rendezvous(barrier: State<'_, Barrier>) -> &'static str {
     "Rendezvous reached."
 }
 
-pub fn rocket() -> rocket::Rocket {
-    rocket::ignite()
+pub fn rocket() -> Rocket<Build> {
+    rocket::build()
         .mount("/", routes![rendezvous])
-        .attach(AdHoc::on_attach("Add Channel", |rocket| async {
-            Ok(rocket.manage(Barrier::new(2)))
+        .attach(AdHoc::on_ignite("Add Channel", |rocket| async {
+            rocket.manage(Barrier::new(2))
         }))
 }
 

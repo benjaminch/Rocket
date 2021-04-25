@@ -1,5 +1,6 @@
 #[macro_use] extern crate rocket;
 
+use rocket::{Rocket, Build};
 use rocket::response::Redirect;
 use rocket::http::uri::Uri;
 
@@ -20,10 +21,9 @@ fn uri_redirect() -> Redirect {
     Redirect::to(uri!(hello: NAME))
 }
 
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/", routes![hello, uri_redirect, raw_redirect])
+fn rocket() -> Rocket<Build> {
+    rocket::build().mount("/", routes![hello, uri_redirect, raw_redirect])
 }
-
 
 mod tests {
     use super::*;
@@ -33,7 +33,7 @@ mod tests {
     #[test]
     fn uri_percent_encoding_redirect() {
         let expected_location = vec!["/hello/John%5B%5D%7C%5C%25@%5E"];
-        let client = Client::tracked(rocket()).unwrap();
+        let client = Client::debug(rocket()).unwrap();
 
         let response = client.get("/raw").dispatch();
         let location: Vec<_> = response.headers().get("location").collect();
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn uri_percent_encoding_get() {
-        let client = Client::tracked(rocket()).unwrap();
+        let client = Client::debug(rocket()).unwrap();
         let name = Uri::percent_encode(NAME);
         let response = client.get(format!("/hello/{}", name)).dispatch();
         assert_eq!(response.status(), Status::Ok);

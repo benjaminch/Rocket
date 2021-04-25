@@ -1,6 +1,8 @@
-use std::borrow::Cow;
+use std::fmt;
+use std::convert::TryInto;
 
 use crate::{Request, http::Method, local::asynchronous};
+use crate::http::uri::Origin;
 
 use super::{Client, LocalResponse};
 
@@ -13,11 +15,11 @@ use super::{Client, LocalResponse};
 /// The following snippet uses the available builder methods to construct and
 /// dispatch a `POST` request to `/` with a JSON body:
 ///
-/// ```rust
+/// ```rust,no_run
 /// use rocket::local::blocking::{Client, LocalRequest};
 /// use rocket::http::{ContentType, Cookie};
 ///
-/// let client = Client::tracked(rocket::ignite()).expect("valid rocket");
+/// let client = Client::tracked(rocket::build()).expect("valid rocket");
 /// let req = client.post("/")
 ///     .header(ContentType::JSON)
 ///     .remote("127.0.0.1:8000".parse().unwrap())
@@ -34,12 +36,10 @@ pub struct LocalRequest<'c> {
 
 impl<'c> LocalRequest<'c> {
     #[inline]
-    pub(crate) fn new(
-        client: &'c Client,
-        method: Method,
-        uri: Cow<'c, str>
-    ) -> LocalRequest<'c> {
-        let inner = asynchronous::LocalRequest::new(&client.inner, method, uri);
+    pub(crate) fn new<'u: 'c, U>(client: &'c Client, method: Method, uri: U) -> Self
+        where U: TryInto<Origin<'u>> + fmt::Display
+    {
+        let inner = asynchronous::LocalRequest::new(client.inner(), method, uri);
         Self { inner, client }
     }
 
@@ -62,12 +62,26 @@ impl<'c> LocalRequest<'c> {
         LocalResponse { inner, client: self.client }
     }
 
-    pub_request_impl!("# use rocket::local::blocking::Client;
+    pub_request_impl!("# use rocket::local::blocking::Client;\n\
         use rocket::local::blocking::LocalRequest;");
 }
 
 impl std::fmt::Debug for LocalRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self._request().fmt(f)
+    }
+}
+
+impl<'c> std::ops::Deref for LocalRequest<'c> {
+    type Target = Request<'c>;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
+
+impl<'c> std::ops::DerefMut for LocalRequest<'c> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner_mut()
     }
 }

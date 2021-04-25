@@ -43,8 +43,13 @@
 //! rocket = "0.5.0-dev"
 //! ```
 //!
-//! See the [guide](https://rocket.rs/master/guide) for more information on how to
-//! write Rocket applications. Here's a simple example to get you started:
+//! <small>Note that development versions, tagged with `-dev`, are not published
+//! and need to be specified as [git dependencies].</small>
+//!
+//! See the [guide](https://rocket.rs/master/guide) for more information on how
+//! to write Rocket applications. Here's a simple example to get you started:
+//!
+//! [git dependencies]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#specifying-dependencies-from-git-repositories
 //!
 //! ```rust,no_run
 //! #[macro_use] extern crate rocket;
@@ -56,7 +61,7 @@
 //!
 //! #[launch]
 //! fn rocket() -> _ {
-//!     rocket::ignite().mount("/", routes![hello])
+//!     rocket::build().mount("/", routes![hello])
 //! }
 //! ```
 //!
@@ -79,10 +84,11 @@
 //!
 //! ## Configuration
 //!
-//! Rocket and Rocket libraries are configured via the `Rocket.toml` file and/or
-//! `ROCKET_{PARAM}` environment variables. For more information on how to
-//! configure Rocket, see the [configuration section] of the guide as well as
-//! the [`config`] module documentation.
+//! By default, Rocket applications are configured via a `Rocket.toml` file
+//! and/or `ROCKET_{PARAM}` environment variables. For more information on how
+//! to configure Rocket, including how to completely customize configuration
+//! sources, see the [configuration section] of the guide as well as the
+//! [`config`] module documentation.
 //!
 //! [configuration section]: https://rocket.rs/master/guide/configuration/
 //!
@@ -95,11 +101,12 @@
 //!
 //! [testing chapter of the guide]: https://rocket.rs/master/guide/testing/#testing
 
-#[allow(unused_imports)] #[macro_use] extern crate rocket_codegen;
+#[macro_use]
+#[allow(unused_imports)]
+extern crate rocket_codegen;
+
 pub use rocket_codegen::*;
 pub use async_trait::*;
-
-#[macro_use] extern crate log;
 
 /// These are public dependencies! Update docs if these are changed, especially
 /// figment's version number in docs.
@@ -109,17 +116,20 @@ pub use futures;
 pub use tokio;
 pub use figment;
 
-#[doc(hidden)] #[macro_use] pub mod logger;
+#[doc(hidden)]
+#[macro_use] pub mod log;
 #[macro_use] pub mod outcome;
+#[macro_use] pub mod data;
+#[doc(hidden)] pub mod sentinel;
 pub mod local;
 pub mod request;
 pub mod response;
 pub mod config;
-pub mod data;
-pub mod handler;
+pub mod form;
 pub mod fairing;
 pub mod error;
 pub mod catcher;
+pub mod route;
 
 // Reexport of HTTP everything.
 pub mod http {
@@ -130,34 +140,43 @@ pub mod http {
 
     #[doc(inline)]
     pub use rocket_http::*;
+
+    #[doc(inline)]
+    pub use crate::cookies::*;
 }
 
 mod shutdown;
-mod router;
-mod rocket;
 mod server;
-mod codegen;
 mod ext;
+mod state;
+mod cookies;
+mod rocket;
+mod router;
+mod phase;
 
-#[doc(hidden)] pub use log::{info, warn, error, debug};
 #[doc(inline)] pub use crate::response::Response;
-#[doc(hidden)] pub use crate::codegen::{StaticRouteInfo, StaticCatcherInfo};
 #[doc(inline)] pub use crate::data::Data;
 #[doc(inline)] pub use crate::config::Config;
 #[doc(inline)] pub use crate::catcher::Catcher;
-pub use crate::router::Route;
-pub use crate::request::{Request, State};
+#[doc(inline)] pub use crate::route::Route;
+#[doc(hidden)] pub use either::Either;
+#[doc(inline)] pub use phase::{Phase, Build, Ignite, Orbit};
+#[doc(inline)] pub use error::Error;
+#[doc(inline)] pub use sentinel::Sentinel;
 pub use crate::rocket::Rocket;
+pub use crate::request::Request;
 pub use crate::shutdown::Shutdown;
+pub use crate::state::State;
 
-/// Alias to [`Rocket::ignite()`] Creates a new instance of `Rocket`.
-pub fn ignite() -> Rocket {
-    Rocket::ignite()
+/// Creates a [`Rocket`] instance with the default config provider: aliases
+/// [`Rocket::build()`].
+pub fn build() -> Rocket<Build> {
+    Rocket::build()
 }
 
-/// Alias to [`Rocket::custom()`]. Creates a new instance of `Rocket` with a
-/// custom configuration provider.
-pub fn custom<T: figment::Provider>(provider: T) -> Rocket {
+/// Creates a [`Rocket`] instance with a custom config provider: aliases
+/// [`Rocket::custom()`].
+pub fn custom<T: figment::Provider>(provider: T) -> Rocket<Build> {
     Rocket::custom(provider)
 }
 

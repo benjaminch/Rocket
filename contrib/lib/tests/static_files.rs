@@ -3,18 +3,19 @@ mod static_tests {
     use std::{io::Read, fs::File};
     use std::path::Path;
 
-    use rocket::{self, Rocket, Route};
-    use rocket_contrib::serve::{StaticFiles, Options, crate_relative};
+    use rocket::{Rocket, Route, Build};
     use rocket::http::Status;
     use rocket::local::blocking::Client;
+
+    use rocket_contrib::serve::{StaticFiles, Options, crate_relative};
 
     fn static_root() -> &'static Path {
         Path::new(crate_relative!("/tests/static"))
     }
 
-    fn rocket() -> Rocket {
+    fn rocket() -> Rocket<Build> {
         let root = static_root();
-        rocket::ignite()
+        rocket::build()
             .mount("/default", StaticFiles::from(&root))
             .mount("/no_index", StaticFiles::new(&root, Options::None))
             .mount("/dots", StaticFiles::new(&root, Options::DotFiles))
@@ -69,7 +70,7 @@ mod static_tests {
 
     #[test]
     fn test_static_no_index() {
-        let client = Client::tracked(rocket()).expect("valid rocket");
+        let client = Client::debug(rocket()).expect("valid rocket");
         assert_all(&client, "no_index", REGULAR_FILES, true);
         assert_all(&client, "no_index", HIDDEN_FILES, false);
         assert_all(&client, "no_index", INDEXED_DIRECTORIES, false);
@@ -77,7 +78,7 @@ mod static_tests {
 
     #[test]
     fn test_static_hidden() {
-        let client = Client::tracked(rocket()).expect("valid rocket");
+        let client = Client::debug(rocket()).expect("valid rocket");
         assert_all(&client, "dots", REGULAR_FILES, true);
         assert_all(&client, "dots", HIDDEN_FILES, true);
         assert_all(&client, "dots", INDEXED_DIRECTORIES, false);
@@ -85,7 +86,7 @@ mod static_tests {
 
     #[test]
     fn test_static_index() {
-        let client = Client::tracked(rocket()).expect("valid rocket");
+        let client = Client::debug(rocket()).expect("valid rocket");
         assert_all(&client, "index", REGULAR_FILES, true);
         assert_all(&client, "index", HIDDEN_FILES, false);
         assert_all(&client, "index", INDEXED_DIRECTORIES, true);
@@ -97,7 +98,7 @@ mod static_tests {
 
     #[test]
     fn test_static_all() {
-        let client = Client::tracked(rocket()).expect("valid rocket");
+        let client = Client::debug(rocket()).expect("valid rocket");
         assert_all(&client, "both", REGULAR_FILES, true);
         assert_all(&client, "both", HIDDEN_FILES, true);
         assert_all(&client, "both", INDEXED_DIRECTORIES, true);
@@ -119,17 +120,16 @@ mod static_tests {
 
     #[test]
     fn test_forwarding() {
-        use rocket::http::RawStr;
         use rocket::{get, routes};
 
         #[get("/<value>", rank = 20)]
         fn catch_one(value: String) -> String { value }
 
         #[get("/<a>/<b>", rank = 20)]
-        fn catch_two(a: &RawStr, b: &RawStr) -> String { format!("{}/{}", a, b) }
+        fn catch_two(a: &str, b: &str) -> String { format!("{}/{}", a, b) }
 
         let rocket = rocket().mount("/default", routes![catch_one, catch_two]);
-        let client = Client::tracked(rocket).expect("valid rocket");
+        let client = Client::debug(rocket).expect("valid rocket");
 
         let response = client.get("/default/ireallydontexist").dispatch();
         assert_eq!(response.status(), Status::Ok);
@@ -146,7 +146,7 @@ mod static_tests {
 
     #[test]
     fn test_redirection() {
-        let client = Client::tracked(rocket()).expect("valid rocket");
+        let client = Client::debug(rocket()).expect("valid rocket");
 
         // Redirection only happens if enabled, and doesn't affect index behaviour.
         let response = client.get("/no_index/inner").dispatch();
